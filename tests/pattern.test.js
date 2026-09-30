@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planPattern, planQuiltLayout, QUILT_PRESETS, clipLine, demoProject, parseProject, validateBlock } from '../web/pattern.js';
+import { analyzePieces, collectIntersections, extendLineToNextHit, planPattern, planQuiltLayout, QUILT_PRESETS, clipLine, demoProject, parseProject, segmentIntersection, snapDrawingPoint, validateBlock } from '../web/pattern.js';
 
 const makeBlock = (width = 4, height = 4) => ({ Name: 'Test block', WidthInches: width, HeightInches: height, Lines: [] });
 
@@ -68,7 +68,7 @@ test('clipping handles crossing, outside, parallel, boundary, and reversed lines
 });
 
 test('invalid dimensions and out-of-bounds geometry fail instead of generating misleading output', () => {
-  for (const size of [0, -1, Infinity, NaN, 61]) assert.throws(() => planPattern(makeBlock(size, 4)));
+  for (const size of [0, -1, Infinity, NaN, 241]) assert.throws(() => planPattern(makeBlock(size, 4)));
   const block = makeBlock();
   block.Lines = [{ Start: { X: 0, Y: 0 }, End: { X: 5, Y: 3 } }];
   assert.throws(() => validateBlock(block), /inside/);
@@ -121,4 +121,58 @@ test('quilt layout can repeat without mirroring', () => {
   const block = makeBlock(10, 10);
   const layout = planQuiltLayout(block, { WidthInches: 30, HeightInches: 20, AlternateMirrors: false });
   assert.ok(layout.instances.every(item => item.mirrorX === false));
+});
+
+
+test('segment intersection returns exact crossing coordinates', () => {
+  const hit = segmentIntersection(
+    { X: 0, Y: 5 }, { X: 10, Y: 5 },
+    { X: 6, Y: 0 }, { X: 6, Y: 10 },
+  );
+  assert.equal(hit.X, 6);
+  assert.equal(hit.Y, 5);
+});
+
+test('drawn lines extend until the next seam or block boundary', () => {
+  const block = makeBlock(10, 10);
+  block.Lines = [{ Start: { X: 6, Y: 0 }, End: { X: 6, Y: 10 }, BoundaryType: 'piece' }];
+  assert.deepEqual(
+    extendLineToNextHit(block, { X: 0, Y: 5 }, { X: 4, Y: 5 }),
+    { X: 6, Y: 5 },
+  );
+  assert.deepEqual(
+    extendLineToNextHit(makeBlock(10, 10), { X: 2, Y: 2 }, { X: 8, Y: 2 }),
+    { X: 10, Y: 2 },
+  );
+});
+
+test('intersection snapping and anywhere-on-line snapping are distinct', () => {
+  const block = makeBlock(10, 10);
+  block.Lines = [
+    { Start: { X: 5, Y: 0 }, End: { X: 5, Y: 10 }, BoundaryType: 'piece' },
+    { Start: { X: 0, Y: 4 }, End: { X: 10, Y: 4 }, BoundaryType: 'piece' },
+  ];
+  assert.ok(collectIntersections(block).some(point => point.X === 5 && point.Y === 4));
+  assert.deepEqual(snapDrawingPoint(block, { X: 5.08, Y: 4.05 }, 'intersection', 0.2), { X: 5, Y: 4 });
+  assert.deepEqual(snapDrawingPoint(block, { X: 5.08, Y: 7 }, 'line', 0.2), { X: 5, Y: 7 });
+});
+
+test('piece seams share a section label while section boundaries split allowances', () => {
+  const internal = makeBlock(10, 10);
+  internal.Lines = [{ Start: { X: 0, Y: 5 }, End: { X: 10, Y: 5 }, BoundaryType: 'piece' }];
+  const joined = analyzePieces(internal);
+  assert.equal(joined.faces.length, 2);
+  assert.deepEqual(joined.faces.map(face => face.label).sort(), ['A1', 'A2']);
+
+  const separated = makeBlock(10, 10);
+  separated.Lines = [{ Start: { X: 0, Y: 5 }, End: { X: 10, Y: 5 }, BoundaryType: 'section' }];
+  const split = analyzePieces(separated);
+  assert.equal(split.faces.length, 2);
+  assert.deepEqual(split.faces.map(face => face.label).sort(), ['A', 'B']);
+  assert.ok(split.edges.some(edge => edge.type === 'section' && !edge.border));
+});
+
+test('quilt-size blocks up to 240 inches are valid', () => {
+  assert.doesNotThrow(() => validateBlock(makeBlock(108, 108)));
+  assert.throws(() => validateBlock(makeBlock(241, 108)), /240/);
 });
