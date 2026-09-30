@@ -48,8 +48,8 @@ export function planQuiltLayout(block, layout = {}) {
 export function validateBlock(block) {
   if (!block || !Number.isFinite(block.WidthInches) || !Number.isFinite(block.HeightInches)
     || block.WidthInches < 1 || block.HeightInches < 1
-    || block.WidthInches > 60 || block.HeightInches > 60) {
-    throw new Error('Block width and height must be between 1 and 60 inches.');
+    || block.WidthInches > 240 || block.HeightInches > 240) {
+    throw new Error('Block width and height must be between 1 and 240 inches.');
   }
   if (!Array.isArray(block.Lines) || block.Lines.length > 5000) {
     throw new Error('A block can contain at most 5,000 seam lines.');
@@ -63,6 +63,229 @@ export function validateBlock(block) {
     }
   }
   return block;
+}
+
+
+const EPSILON = 1e-7;
+const samePoint = (a, b, epsilon = 1e-5) => Math.hypot(a.X - b.X, a.Y - b.Y) <= epsilon;
+
+export function segmentIntersection(a, b, c, d) {
+  const r = { X: b.X - a.X, Y: b.Y - a.Y };
+  const s = { X: d.X - c.X, Y: d.Y - c.Y };
+  const cross = (u, v) => u.X * v.Y - u.Y * v.X;
+  const denominator = cross(r, s);
+  const q = { X: c.X - a.X, Y: c.Y - a.Y };
+  if (Math.abs(denominator) < EPSILON) return null;
+  const t = cross(q, s) / denominator;
+  const u = cross(q, r) / denominator;
+  if (t < -EPSILON || t > 1 + EPSILON || u < -EPSILON || u > 1 + EPSILON) return null;
+  return { X: a.X + t * r.X, Y: a.Y + t * r.Y, t, u };
+}
+
+function boundarySegments(block) {
+  const w = block.WidthInches, h = block.HeightInches;
+  return [
+    { Start: { X: 0, Y: 0 }, End: { X: w, Y: 0 }, BoundaryType: 'section', Border: true },
+    { Start: { X: w, Y: 0 }, End: { X: w, Y: h }, BoundaryType: 'section', Border: true },
+    { Start: { X: w, Y: h }, End: { X: 0, Y: h }, BoundaryType: 'section', Border: true },
+    { Start: { X: 0, Y: h }, End: { X: 0, Y: 0 }, BoundaryType: 'section', Border: true },
+  ];
+}
+
+export function collectIntersections(block) {
+  validateBlock(block);
+  const segments = [...boundarySegments(block), ...block.Lines];
+  const points = [];
+  const add = point => {
+    if (!points.some(existing => samePoint(existing, point))) points.push({ X: point.X, Y: point.Y });
+  };
+  segments.forEach(segment => { add(segment.Start); add(segment.End); });
+  for (let i = 0; i < segments.length; i++) {
+    for (let j = i + 1; j < segments.length; j++) {
+      const hit = segmentIntersection(segments[i].Start, segments[i].End, segments[j].Start, segments[j].End);
+      if (hit) add(hit);
+    }
+  }
+  return points;
+}
+
+function projectPointToSegment(point, line) {
+  const dx = line.End.X - line.Start.X, dy = line.End.Y - line.Start.Y;
+  const length2 = dx * dx + dy * dy || 1;
+  const t = Math.max(0, Math.min(1, ((point.X - line.Start.X) * dx + (point.Y - line.Start.Y) * dy) / length2));
+  const projected = { X: line.Start.X + t * dx, Y: line.Start.Y + t * dy };
+  return { ...projected, distance: Math.hypot(point.X - projected.X, point.Y - projected.Y) };
+}
+
+export function snapDrawingPoint(block, point, mode = 'intersection', tolerance = 0.3) {
+  validateBlock(block);
+  if (mode === 'intersection') {
+    let best = null;
+    for (const candidate of collectIntersections(block)) {
+      const distance = Math.hypot(point.X - candidate.X, point.Y - candidate.Y);
+      if (distance <= tolerance && (!best || distance < best.distance)) best = { ...candidate, distance };
+    }
+    return best ? { X: best.X, Y: best.Y } : point;
+  }
+  if (mode === 'line') {
+    let best = null;
+    for (const line of [...boundarySegments(block), ...block.Lines]) {
+      const projected = projectPointToSegment(point, line);
+      if (projected.distance <= tolerance && (!best || projected.distance < best.distance)) best = projected;
+    }
+    return best ? { X: best.X, Y: best.Y } : point;
+  }
+  return point;
+}
+
+function raySegmentHit(start, direction, line) {
+  const r = direction;
+  const s = { X: line.End.X - line.Start.X, Y: line.End.Y - line.Start.Y };
+  const cross = (u, v) => u.X * v.Y - u.Y * v.X;
+  const denominator = cross(r, s);
+  if (Math.abs(denominator) < EPSILON) return null;
+  const q = { X: line.Start.X - start.X, Y: line.Start.Y - start.Y };
+  const t = cross(q, s) / denominator;
+  const u = cross(q, r) / denominator;
+  if (t <= 1e-5 || u < -EPSILON || u > 1 + EPSILON) return null;
+  return { X: start.X + t * r.X, Y: start.Y + t * r.Y, t };
+}
+
+export function extendLineToNextHit(block, start, toward) {
+  validateBlock(block);
+  const direction = { X: toward.X - start.X, Y: toward.Y - start.Y };
+  if (Math.hypot(direction.X, direction.Y) < EPSILON) return null;
+  let best = null;
+  for (const line of [...boundarySegments(block), ...block.Lines]) {
+    const hit = raySegmentHit(start, direction, line);
+    if (hit && (!best || hit.t < best.t)) best = hit;
+  }
+  return best ? { X: best.X, Y: best.Y } : null;
+}
+
+function splitGeometry(block) {
+  const source = [...boundarySegments(block), ...block.Lines.map(line => ({ ...line, BoundaryType: line.BoundaryType || 'piece' }))];
+  const vertices = [];
+  const vertexIndex = point => {
+    let index = vertices.findIndex(existing => samePoint(existing, point));
+    if (index < 0) { index = vertices.length; vertices.push({ X: point.X, Y: point.Y }); }
+    return index;
+  };
+  const edges = [];
+
+  source.forEach((segment, index) => {
+    const points = [{ ...segment.Start, t: 0 }, { ...segment.End, t: 1 }];
+    for (let j = 0; j < source.length; j++) {
+      if (j === index) continue;
+      const hit = segmentIntersection(segment.Start, segment.End, source[j].Start, source[j].End);
+      if (hit && !points.some(point => Math.abs(point.t - hit.t) < 1e-6)) points.push(hit);
+    }
+    points.sort((a, b) => a.t - b.t);
+    for (let i = 0; i < points.length - 1; i++) {
+      if (samePoint(points[i], points[i + 1])) continue;
+      const a = vertexIndex(points[i]), b = vertexIndex(points[i + 1]);
+      const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+      if (!edges.some(edge => edge.key === key)) edges.push({ a, b, key, type: segment.BoundaryType || 'piece', border: !!segment.Border });
+    }
+  });
+  return { vertices, edges };
+}
+
+const alphaLabel = index => {
+  let n = index + 1, label = '';
+  while (n > 0) { n--; label = String.fromCharCode(65 + n % 26) + label; n = Math.floor(n / 26); }
+  return label;
+};
+
+export function analyzePieces(block) {
+  validateBlock(block);
+  const { vertices, edges } = splitGeometry(block);
+  const outgoing = vertices.map(() => []);
+  edges.forEach((edge, edgeIndex) => {
+    outgoing[edge.a].push({ from: edge.a, to: edge.b, edgeIndex });
+    outgoing[edge.b].push({ from: edge.b, to: edge.a, edgeIndex });
+  });
+  outgoing.forEach((list, vertex) => list.sort((left, right) => {
+    const la = Math.atan2(vertices[left.to].Y - vertices[vertex].Y, vertices[left.to].X - vertices[vertex].X);
+    const ra = Math.atan2(vertices[right.to].Y - vertices[vertex].Y, vertices[right.to].X - vertices[vertex].X);
+    return la - ra;
+  }));
+
+  const visited = new Set(), faces = [];
+  const directedKey = (a, b) => `${a}>${b}`;
+  for (const edge of edges) {
+    for (const [start, next] of [[edge.a, edge.b], [edge.b, edge.a]]) {
+      if (visited.has(directedKey(start, next))) continue;
+      const polygon = [], faceEdges = [];
+      let a = start, b = next, guard = 0;
+      while (guard++ < edges.length * 4 + 20) {
+        const key = directedKey(a, b);
+        if (visited.has(key)) break;
+        visited.add(key);
+        polygon.push(vertices[a]);
+        const list = outgoing[b];
+        const reverseIndex = list.findIndex(item => item.to === a);
+        if (reverseIndex < 0) break;
+        const chosen = list[(reverseIndex - 1 + list.length) % list.length];
+        faceEdges.push(chosen.edgeIndex);
+        a = b; b = chosen.to;
+        if (a === start && b === next) break;
+      }
+      if (polygon.length >= 3) {
+        const area = polygon.reduce((sum, point, i) => {
+          const q = polygon[(i + 1) % polygon.length];
+          return sum + point.X * q.Y - q.X * point.Y;
+        }, 0) / 2;
+        if (area > 1e-5) {
+          const centroid = {
+            X: polygon.reduce((sum, point) => sum + point.X, 0) / polygon.length,
+            Y: polygon.reduce((sum, point) => sum + point.Y, 0) / polygon.length,
+          };
+          faces.push({ polygon, area, centroid, edgeIndexes: faceEdges });
+        }
+      }
+    }
+  }
+
+  const parents = faces.map((_, i) => i);
+  const find = i => parents[i] === i ? i : (parents[i] = find(parents[i]));
+  const unite = (a, b) => { a = find(a); b = find(b); if (a !== b) parents[b] = a; };
+  const edgeFaces = new Map();
+  faces.forEach((face, faceIndex) => face.edgeIndexes.forEach(edgeIndex => {
+    if (!edgeFaces.has(edgeIndex)) edgeFaces.set(edgeIndex, []);
+    edgeFaces.get(edgeIndex).push(faceIndex);
+  }));
+  edgeFaces.forEach((faceIndexes, edgeIndex) => {
+    if (faceIndexes.length === 2 && edges[edgeIndex].type === 'piece') unite(faceIndexes[0], faceIndexes[1]);
+  });
+
+  const groups = new Map();
+  faces.forEach((face, i) => {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(i);
+  });
+  const sections = [...groups.values()].map(faceIndexes => {
+    const centroid = {
+      X: faceIndexes.reduce((sum, i) => sum + faces[i].centroid.X * faces[i].area, 0) / faceIndexes.reduce((sum, i) => sum + faces[i].area, 0),
+      Y: faceIndexes.reduce((sum, i) => sum + faces[i].centroid.Y * faces[i].area, 0) / faceIndexes.reduce((sum, i) => sum + faces[i].area, 0),
+    };
+    return { faceIndexes, centroid };
+  }).sort((a, b) => a.centroid.Y - b.centroid.Y || a.centroid.X - b.centroid.X);
+
+  sections.forEach((section, sectionIndex) => {
+    const letter = alphaLabel(sectionIndex);
+    const ordered = [...section.faceIndexes].sort((a, b) => faces[a].centroid.Y - faces[b].centroid.Y || faces[a].centroid.X - faces[b].centroid.X);
+    ordered.forEach((faceIndex, pieceIndex) => {
+      faces[faceIndex].section = letter;
+      faces[faceIndex].label = ordered.length === 1 ? letter : `${letter}${pieceIndex + 1}`;
+    });
+  });
+
+  return {
+    faces,
+    edges: edges.map(edge => ({ ...edge, Start: vertices[edge.a], End: vertices[edge.b] })),
+  };
 }
 
 // All PDF coordinates use points: 72 points are exactly one physical inch.
@@ -118,7 +341,7 @@ export function demoProject() {
     Name: 'First light',
     Blocks: [{
       Id: blockId, Name: 'First light', WidthInches: 12, HeightInches: 12,
-      GridSizeInches: 0.25, SourceImageOpacity: 0.35,
+      GridSizeInches: 0.25, SourceImageOpacity: 0.35, DrawingSnapMode: 'intersection',
       Lines: [[0, 0, 8, 12], [0, 5, 12, 5], [8, 12, 12, 5], [0, 10, 8, 12], [4, 0, 12, 5]].map(([x1, y1, x2, y2]) => ({
         Id: crypto.randomUUID(), Start: { X: x1, Y: y1 }, End: { X: x2, Y: y2 },
       })),
@@ -146,6 +369,8 @@ export function parseProject(text) {
   project.Blocks.forEach(block => {
     validateBlock(block);
     if (typeof block.Name !== 'string' || block.Name.length > 200) throw new Error('Block names must be text with at most 200 characters.');
+    if (!['intersection', 'line'].includes(block.DrawingSnapMode)) block.DrawingSnapMode = 'intersection';
+    block.Lines.forEach(line => { if (!['piece', 'section'].includes(line.BoundaryType)) line.BoundaryType = 'piece'; });
     if (block.SourceImageBase64 && (typeof block.SourceImageBase64 !== 'string' || block.SourceImageBase64.length > 14_000_000)) {
       throw new Error('Embedded images must be smaller than 10 MB.');
     }
