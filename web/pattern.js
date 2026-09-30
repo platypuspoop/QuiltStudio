@@ -5,6 +5,46 @@ export const PAPER_SIZES = {
   a4: { label: 'A4', width: 210 / 25.4 * 72, height: 297 / 25.4 * 72 },
 };
 
+export const QUILT_PRESETS = {
+  lap: { label: 'Lap', width: 50, height: 65 },
+  twin: { label: 'Twin', width: 70, height: 90 },
+  full: { label: 'Full', width: 84, height: 90 },
+  queen: { label: 'Queen', width: 90, height: 108 },
+  king: { label: 'King', width: 108, height: 108 },
+};
+
+export function planQuiltLayout(block, layout = {}) {
+  validateBlock(block);
+  const width = Number(layout.WidthInches);
+  const height = Number(layout.HeightInches);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < block.WidthInches || height < block.HeightInches || width > 240 || height > 240) {
+    throw new Error('Quilt dimensions must fit at least one block and be no larger than 240 inches.');
+  }
+
+  const columns = Math.max(1, Math.floor(width / block.WidthInches));
+  const rows = Math.max(1, Math.floor(height / block.HeightInches));
+  const usedWidth = columns * block.WidthInches;
+  const usedHeight = rows * block.HeightInches;
+  const offsetX = (width - usedWidth) / 2;
+  const offsetY = (height - usedHeight) / 2;
+  const alternateMirrors = layout.AlternateMirrors !== false;
+  const instances = [];
+
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      instances.push({
+        row,
+        column,
+        x: offsetX + column * block.WidthInches,
+        y: offsetY + row * block.HeightInches,
+        mirrorX: alternateMirrors && (row + column) % 2 === 1,
+      });
+    }
+  }
+
+  return { width, height, columns, rows, usedWidth, usedHeight, offsetX, offsetY, instances };
+}
+
 export function validateBlock(block) {
   if (!block || !Number.isFinite(block.WidthInches) || !Number.isFinite(block.HeightInches)
     || block.WidthInches < 1 || block.HeightInches < 1
@@ -83,7 +123,7 @@ export function demoProject() {
         Id: crypto.randomUUID(), Start: { X: x1, Y: y1 }, End: { X: x2, Y: y2 },
       })),
     }],
-    Layout: { WidthInches: 90, HeightInches: 108, Instances: [] },
+    Layout: { Preset: 'queen', WidthInches: 90, HeightInches: 108, AlternateMirrors: true, Instances: [] },
   };
 }
 
@@ -93,6 +133,16 @@ export function parseProject(text) {
   if (project?.SchemaVersion !== 1 || !Array.isArray(project.Blocks) || project.Blocks.length === 0 || project.Blocks.length > 100) {
     throw new Error('Open a version 1 QuiltStudio project containing 1–100 blocks.');
   }
+  if (!project.Layout || typeof project.Layout !== 'object') {
+    project.Layout = { Preset: 'queen', WidthInches: 90, HeightInches: 108, AlternateMirrors: true, Instances: [] };
+  } else {
+    if (!Number.isFinite(project.Layout.WidthInches)) project.Layout.WidthInches = 90;
+    if (!Number.isFinite(project.Layout.HeightInches)) project.Layout.HeightInches = 108;
+    if (typeof project.Layout.AlternateMirrors !== 'boolean') project.Layout.AlternateMirrors = true;
+    if (typeof project.Layout.Preset !== 'string') project.Layout.Preset = 'custom';
+    if (!Array.isArray(project.Layout.Instances)) project.Layout.Instances = [];
+  }
+
   project.Blocks.forEach(block => {
     validateBlock(block);
     if (typeof block.Name !== 'string' || block.Name.length > 200) throw new Error('Block names must be text with at most 200 characters.');
