@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planPattern, clipLine, demoProject, parseProject, validateBlock } from '../web/pattern.js';
+import { planPattern, planQuiltLayout, QUILT_PRESETS, clipLine, demoProject, parseProject, validateBlock } from '../web/pattern.js';
 
 const makeBlock = (width = 4, height = 4) => ({ Name: 'Test block', WidthInches: width, HeightInches: height, Lines: [] });
 
@@ -89,4 +89,36 @@ test('invalid, empty, and newer-version project files are rejected', () => {
   const project = demoProject();
   project.SchemaVersion = 2;
   assert.throws(() => parseProject(JSON.stringify(project)), /version 1/);
+});
+
+
+test('standard quilt presets expose common finished quilt sizes', () => {
+  assert.deepEqual(QUILT_PRESETS.queen, { label: 'Queen', width: 90, height: 108 });
+  assert.deepEqual(QUILT_PRESETS.king, { label: 'King', width: 108, height: 108 });
+});
+
+test('quilt layout repeats blocks and alternates mirrors like a checkerboard', () => {
+  const block = makeBlock(12, 12);
+  const layout = planQuiltLayout(block, { WidthInches: 36, HeightInches: 24, AlternateMirrors: true });
+  assert.equal(layout.columns, 3);
+  assert.equal(layout.rows, 2);
+  assert.equal(layout.instances.length, 6);
+  assert.deepEqual(layout.instances.map(item => item.mirrorX), [false, true, false, true, false, true]);
+});
+
+test('quilt layout centers leftover space around the repeated block field', () => {
+  const block = makeBlock(12, 12);
+  const layout = planQuiltLayout(block, { WidthInches: 50, HeightInches: 65, AlternateMirrors: true });
+  assert.equal(layout.columns, 4);
+  assert.equal(layout.rows, 5);
+  assert.equal(layout.usedWidth, 48);
+  assert.equal(layout.usedHeight, 60);
+  assert.equal(layout.offsetX, 1);
+  assert.equal(layout.offsetY, 2.5);
+});
+
+test('quilt layout can repeat without mirroring', () => {
+  const block = makeBlock(10, 10);
+  const layout = planQuiltLayout(block, { WidthInches: 30, HeightInches: 20, AlternateMirrors: false });
+  assert.ok(layout.instances.every(item => item.mirrorX === false));
 });
