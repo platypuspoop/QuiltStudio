@@ -73,7 +73,7 @@ $('app').innerHTML = `
         <div class="print-specs"><div><span>Finished block</span><strong id="print-size"></strong></div><div><span>Pattern sheets</span><strong id="sheet-count"></strong></div><div><span>Print scale</span><strong>100% · actual size</strong></div></div>
         <button id="export-pdf" class="button primary full">${icon('download')} Download FPP pattern</button><p class="export-note">Vector PDF · no account needed</p>
         <div class="calibration-note"><span class="calibration-square">1″</span><p><strong>Measure before you sew.</strong>Your PDF includes a 1-inch test square. Print at actual size, then check it with a ruler.</p></div>
-        <p class="scope-note">This is a seam template. Piece numbering and sewing order are not checked yet.</p>
+        <p class="scope-note">Labels are generated from Piece seam vs Section boundary lines. Sewing order is not checked yet.</p>
       </aside>
     </section>
     <section class="quilt-builder panel" aria-label="Quilt layout builder">
@@ -148,10 +148,11 @@ function chooseTool(next) {
   }
   render();
 }
-function allowanceMarkup() {
+function allowanceMarkup(mirror = false) {
   let analysis;
   try { analysis = analyzePieces(block()); } catch { return ''; }
   const b = block(), center = { X: b.WidthInches / 2, Y: b.HeightInches / 2 };
+  const tx = x => mirror ? b.WidthInches - x : x;
   return analysis.edges.filter(edge => edge.type === 'section').map(edge => {
     const dx = edge.End.X - edge.Start.X, dy = edge.End.Y - edge.Start.Y;
     const length = Math.hypot(dx, dy) || 1;
@@ -160,15 +161,17 @@ function allowanceMarkup() {
       const mx = (edge.Start.X + edge.End.X) / 2, my = (edge.Start.Y + edge.End.Y) / 2;
       if ((mx + nx * 0.25 - center.X) ** 2 + (my + ny * 0.25 - center.Y) ** 2 <
           (mx - nx * 0.25 - center.X) ** 2 + (my - ny * 0.25 - center.Y) ** 2) { nx = -nx; ny = -ny; }
-      return '<line x1="' + (edge.Start.X + nx * 0.25) + '" y1="' + (edge.Start.Y + ny * 0.25) + '" x2="' + (edge.End.X + nx * 0.25) + '" y2="' + (edge.End.Y + ny * 0.25) + '" class="allowance-guide"/>';
+      return '<line x1="' + tx(edge.Start.X + nx * 0.25) + '" y1="' + (edge.Start.Y + ny * 0.25) + '" x2="' + tx(edge.End.X + nx * 0.25) + '" y2="' + (edge.End.Y + ny * 0.25) + '" class="allowance-guide"/>';
     }
-    return [-1, 1].map(side => '<line x1="' + (edge.Start.X + nx * 0.25 * side) + '" y1="' + (edge.Start.Y + ny * 0.25 * side) + '" x2="' + (edge.End.X + nx * 0.25 * side) + '" y2="' + (edge.End.Y + ny * 0.25 * side) + '" class="allowance-guide"/>').join('');
+    return [-1, 1].map(side => '<line x1="' + tx(edge.Start.X + nx * 0.25 * side) + '" y1="' + (edge.Start.Y + ny * 0.25 * side) + '" x2="' + tx(edge.End.X + nx * 0.25 * side) + '" y2="' + (edge.End.Y + ny * 0.25 * side) + '" class="allowance-guide"/>').join('');
   }).join('');
 }
 
-function pieceLabelMarkup() {
+function pieceLabelMarkup(mirror = false) {
   try {
-    return analyzePieces(block()).faces.map(face => '<text x="' + face.centroid.X + '" y="' + face.centroid.Y + '" class="piece-label">' + escape(face.label) + '</text>').join('');
+    if (!block().Lines.length) return '';
+    const size = Math.max(0.42, Math.min(2.4, Math.min(block().WidthInches, block().HeightInches) / 18));
+    return analyzePieces(block()).faces.map(face => '<text x="' + (mirror ? block().WidthInches - face.centroid.X : face.centroid.X) + '" y="' + face.centroid.Y + '" style="font-size:' + size + 'px" class="piece-label">' + escape(face.label) + '</text>').join('');
   } catch { return ''; }
 }
 function lineMarkup(mirror = false) {
@@ -250,7 +253,7 @@ function render() {
   $('delete-line').disabled = selected < 0;
   const s = SEAM_ALLOWANCE;
   $('print-preview').setAttribute('viewBox', `${-s - 0.3} ${-s - 0.3} ${b.WidthInches + 2 * s + 0.6} ${b.HeightInches + 2 * s + 0.6}`);
-  $('print-preview').innerHTML = `<rect x="${-s}" y="${-s}" width="${b.WidthInches + 2 * s}" height="${b.HeightInches + 2 * s}" class="cut-border"/><rect width="${b.WidthInches}" height="${b.HeightInches}" class="print-border"/>${lineMarkup(true)}`;
+  $('print-preview').innerHTML = `<rect x="${-s}" y="${-s}" width="${b.WidthInches + 2 * s}" height="${b.HeightInches + 2 * s}" class="cut-border"/>${allowanceMarkup(true)}<rect width="${b.WidthInches}" height="${b.HeightInches}" class="print-border"/>${lineMarkup(true)}${pieceLabelMarkup(true)}`;
   renderCanvas();
   renderQuiltPreview();
 }
