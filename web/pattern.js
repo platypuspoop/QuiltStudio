@@ -343,7 +343,7 @@ export function demoProject() {
       Id: blockId, Name: 'First light', WidthInches: 12, HeightInches: 12,
       GridSizeInches: 0.25, SourceImageOpacity: 0.35, DrawingSnapMode: 'intersection',
       Lines: [[0, 0, 8, 12], [0, 5, 12, 5], [8, 12, 12, 5], [0, 10, 8, 12], [4, 0, 12, 5]].map(([x1, y1, x2, y2]) => ({
-        Id: crypto.randomUUID(), Start: { X: x1, Y: y1 }, End: { X: x2, Y: y2 },
+        Id: crypto.randomUUID(), Start: { X: x1, Y: y1 }, End: { X: x2, Y: y2 }, BoundaryType: 'piece',
       })),
     }],
     Layout: { Preset: 'queen', WidthInches: 90, HeightInches: 108, AlternateMirrors: true, DesignMode: 'repeat', RepeatBlockId: blockId, LargeBlockId: null, Instances: [] },
