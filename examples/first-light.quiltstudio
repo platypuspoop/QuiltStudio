@@ -1,0 +1,76 @@
+{
+  "SchemaVersion": 1,
+  "Name": "First light",
+  "Blocks": [
+    {
+      "Id": "fa39ae76-c712-4ff0-8944-549456bd1fa3",
+      "Name": "First light",
+      "WidthInches": 12,
+      "HeightInches": 12,
+      "GridSizeInches": 0.25,
+      "SourceImageOpacity": 0.35,
+      "Lines": [
+        {
+          "Id": "a6af3714-995d-4ad9-808d-1f9c45bd9eba",
+          "Start": {
+            "X": 0,
+            "Y": 0
+          },
+          "End": {
+            "X": 8,
+            "Y": 12
+          }
+        },
+        {
+          "Id": "5c524372-c978-48a4-85a4-6da5f0590c48",
+          "Start": {
+            "X": 0,
+            "Y": 5
+          },
+          "End": {
+            "X": 12,
+            "Y": 5
+          }
+        },
+        {
+          "Id": "8237401b-1a85-4f4e-98e1-1b59423402ee",
+          "Start": {
+            "X": 8,
+            "Y": 12
+          },
+          "End": {
+            "X": 12,
+            "Y": 5
+          }
+        },
+        {
+          "Id": "8d216999-4287-495f-bf62-0a8477ff6693",
+          "Start": {
+            "X": 0,
+            "Y": 10
+          },
+          "End": {
+            "X": 8,
+            "Y": 12
+          }
+        },
+        {
+          "Id": "6aba94fc-44d2-4f86-b6ea-c0df2fa7b795",
+          "Start": {
+            "X": 4,
+            "Y": 0
+          },
+          "End": {
+            "X": 12,
+            "Y": 5
+          }
+        }
+      ]
+    }
+  ],
+  "Layout": {
+    "WidthInches": 90,
+    "HeightInches": 108,
+    "Instances": []
+  }
+}

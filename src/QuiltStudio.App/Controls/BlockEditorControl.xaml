@@ -1,0 +1,17 @@
+<UserControl x:Class="QuiltStudio.App.Controls.BlockEditorControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Focusable="True">
+    <Grid Background="#FFEAEAEA">
+        <ScrollViewer x:Name="Scroller" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                      CanContentScroll="False" PreviewMouseWheel="Scroller_OnPreviewMouseWheel">
+            <Border Margin="24" BorderBrush="#FFB0B0B0" BorderThickness="1" Background="White" SnapsToDevicePixels="True">
+                <Canvas x:Name="Surface" Background="White"
+                        MouseLeftButtonDown="Surface_OnMouseLeftButtonDown"
+                        MouseMove="Surface_OnMouseMove"
+                        MouseLeftButtonUp="Surface_OnMouseLeftButtonUp"
+                        MouseRightButtonDown="Surface_OnMouseRightButtonDown" />
+            </Border>
+        </ScrollViewer>
+    </Grid>
+</UserControl>
