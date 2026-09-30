@@ -346,7 +346,7 @@ export function demoProject() {
         Id: crypto.randomUUID(), Start: { X: x1, Y: y1 }, End: { X: x2, Y: y2 },
       })),
     }],
-    Layout: { Preset: 'queen', WidthInches: 90, HeightInches: 108, AlternateMirrors: true, Instances: [] },
+    Layout: { Preset: 'queen', WidthInches: 90, HeightInches: 108, AlternateMirrors: true, DesignMode: 'repeat', RepeatBlockId: blockId, LargeBlockId: null, Instances: [] },
   };
 }
 
@@ -357,12 +357,15 @@ export function parseProject(text) {
     throw new Error('Open a version 1 QuiltStudio project containing 1–100 blocks.');
   }
   if (!project.Layout || typeof project.Layout !== 'object') {
-    project.Layout = { Preset: 'queen', WidthInches: 90, HeightInches: 108, AlternateMirrors: true, Instances: [] };
+    project.Layout = { Preset: 'queen', WidthInches: 90, HeightInches: 108, AlternateMirrors: true, DesignMode: 'repeat', RepeatBlockId: project.Blocks[0]?.Id || null, LargeBlockId: null, Instances: [] };
   } else {
     if (!Number.isFinite(project.Layout.WidthInches)) project.Layout.WidthInches = 90;
     if (!Number.isFinite(project.Layout.HeightInches)) project.Layout.HeightInches = 108;
     if (typeof project.Layout.AlternateMirrors !== 'boolean') project.Layout.AlternateMirrors = true;
     if (typeof project.Layout.Preset !== 'string') project.Layout.Preset = 'custom';
+    if (!['repeat', 'large'].includes(project.Layout.DesignMode)) project.Layout.DesignMode = 'repeat';
+    if (!project.Layout.RepeatBlockId) project.Layout.RepeatBlockId = project.Blocks[0]?.Id || null;
+    if (!('LargeBlockId' in project.Layout)) project.Layout.LargeBlockId = null;
     if (!Array.isArray(project.Layout.Instances)) project.Layout.Instances = [];
   }
 
