@@ -1,5 +1,5 @@
 import './style.css';
-import { demoProject, parseProject, planPattern, SEAM_ALLOWANCE } from './pattern.js';
+import { demoProject, parseProject, planPattern, planQuiltLayout, QUILT_PRESETS, SEAM_ALLOWANCE } from './pattern.js';
 import { createPatternPdf } from './pdf.js';
 
 const icons = {
@@ -72,6 +72,44 @@ $('app').innerHTML = `
         <p class="scope-note">This is a seam template. Piece numbering and sewing order are not checked yet.</p>
       </aside>
     </section>
+    <section class="quilt-builder panel" aria-label="Quilt layout builder">
+      <div class="quilt-builder-copy">
+        <span class="step-dot">03</span>
+        <div>
+          <p class="panel-label">BUILD THE QUILT</p>
+          <h2>Repeat this block across a quilt</h2>
+          <p class="field-help">QuiltStudio repeats the active block edge-to-edge. Alternate mirroring creates a checkerboard-style reflected layout.</p>
+        </div>
+      </div>
+      <div class="quilt-controls">
+        <label class="field">Standard quilt size
+          <select id="quilt-preset">
+            <option value="lap">Lap · 50 × 65 in</option>
+            <option value="twin">Twin · 70 × 90 in</option>
+            <option value="full">Full · 84 × 90 in</option>
+            <option value="queen">Queen · 90 × 108 in</option>
+            <option value="king">King · 108 × 108 in</option>
+            <option value="custom">Custom size</option>
+          </select>
+        </label>
+        <div class="field-row">
+          <label class="field">Quilt width <span>in</span><input id="quilt-width" type="number" min="1" max="240" step="0.25" /></label>
+          <span class="multiply">×</span>
+          <label class="field">Quilt height <span>in</span><input id="quilt-height" type="number" min="1" max="240" step="0.25" /></label>
+        </div>
+        <label class="check-field"><input type="checkbox" id="alternate-mirrors" checked /><span>Alternate mirrored blocks</span><span class="switch" aria-hidden="true"></span></label>
+        <div class="quilt-stats">
+          <div><span>Layout</span><strong id="quilt-grid-size"></strong></div>
+          <div><span>Total blocks</span><strong id="quilt-block-count"></strong></div>
+          <div><span>Covered area</span><strong id="quilt-covered-size"></strong></div>
+        </div>
+      </div>
+      <div class="quilt-preview-wrap">
+        <div class="canvas-caption"><span>QUILT PREVIEW</span><span id="quilt-size-label"></span></div>
+        <svg id="quilt-preview" aria-label="Repeated quilt block preview"></svg>
+        <p class="field-help quilt-preview-note">Any extra space is centered around the repeated block field. Custom sizing is supported.</p>
+      </div>
+    </section>
     <section class="howto"><div><span class="step-number">01 / DESIGN</span><h3>Find your lines.</h3><p>Trace an image or draw from scratch. The sample block is here to help you get started.</p></div><div><span class="step-number">02 / PRINT</span><h3>Keep it true to size.</h3><p>Open the PDF and choose Actual size or 100%. Turn off Fit and Shrink in your print dialog.</p></div><div><span class="step-number">03 / CHECK</span><h3>Then make it yours.</h3><p>Measure the test square. Join tiled pages using the ¼-inch overlap and matching seam lines.</p></div></section>
     <footer class="page-footer"><span>QuiltStudio <span>·</span> A work in progress, stitch by stitch.</span><button id="load-sample" class="text-button">Open sample block ${icon('arrow')}</button></footer>
   </main>
@@ -124,6 +162,41 @@ function renderCanvas() {
   $('canvas').innerHTML = `<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" fill="#fffefb"/>${b.SourceImageBase64 ? `<image href="data:image/${b.SourceImageBase64.startsWith('/9j/') ? 'jpeg' : b.SourceImageBase64.startsWith('UklGR') ? 'webp' : b.SourceImageBase64.startsWith('Qk') ? 'bmp' : 'png'};base64,${escape(b.SourceImageBase64)}" x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" opacity="${Number.isFinite(b.SourceImageOpacity) ? Math.max(0, Math.min(1, b.SourceImageOpacity)) : 0.35}"/>` : ''}${guides}<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" class="block-border"/>${lineMarkup()}${pending ? `<circle cx="${pending.X}" cy="${pending.Y}" r="0.12" class="pending-point"/>${cursor ? `<line x1="${pending.X}" y1="${pending.Y}" x2="${cursor.X}" y2="${cursor.Y}" class="pending-line"/>` : ''}` : ''}`;
   $('canvas').classList.toggle('selecting', tool === 'select');
 }
+function renderQuiltPreview() {
+  const b = block();
+  const layout = project.Layout;
+  let planned;
+  try { planned = planQuiltLayout(b, layout); }
+  catch (error) {
+    $('quilt-preview').innerHTML = '';
+    $('quilt-grid-size').textContent = '—';
+    $('quilt-block-count').textContent = '—';
+    $('quilt-covered-size').textContent = '—';
+    return;
+  }
+
+  $('quilt-width').value = layout.WidthInches;
+  $('quilt-height').value = layout.HeightInches;
+  $('alternate-mirrors').checked = layout.AlternateMirrors !== false;
+  $('quilt-preset').value = QUILT_PRESETS[layout.Preset] ? layout.Preset : 'custom';
+  $('quilt-grid-size').textContent = `${planned.columns} × ${planned.rows}`;
+  $('quilt-block-count').textContent = String(planned.instances.length);
+  $('quilt-covered-size').textContent = `${planned.usedWidth}″ × ${planned.usedHeight}″`;
+  $('quilt-size-label').textContent = `${planned.width}″ × ${planned.height}″`;
+
+  const svg = $('quilt-preview');
+  svg.setAttribute('viewBox', `0 0 ${planned.width} ${planned.height}`);
+  const blocks = planned.instances.map(instance => {
+    const seams = b.Lines.map(line => {
+      const sx = instance.mirrorX ? b.WidthInches - line.Start.X : line.Start.X;
+      const ex = instance.mirrorX ? b.WidthInches - line.End.X : line.End.X;
+      return `<line x1="${instance.x + sx}" y1="${instance.y + line.Start.Y}" x2="${instance.x + ex}" y2="${instance.y + line.End.Y}" class="quilt-seam"/>`;
+    }).join('');
+    return `<g class="quilt-block ${instance.mirrorX ? 'mirrored' : ''}"><rect x="${instance.x}" y="${instance.y}" width="${b.WidthInches}" height="${b.HeightInches}" class="quilt-block-border"/>${seams}</g>`;
+  }).join('');
+  svg.innerHTML = `<rect width="${planned.width}" height="${planned.height}" class="quilt-background"/>${blocks}`;
+}
+
 function render() {
   const b = block();
   $('block-select').innerHTML = project.Blocks.map((b, i) => `<option value="${i}">${escape(b.Name)}</option>`).join('');
@@ -147,6 +220,7 @@ function render() {
   $('print-preview').setAttribute('viewBox', `${-s - 0.3} ${-s - 0.3} ${b.WidthInches + 2 * s + 0.6} ${b.HeightInches + 2 * s + 0.6}`);
   $('print-preview').innerHTML = `<rect x="${-s}" y="${-s}" width="${b.WidthInches + 2 * s}" height="${b.HeightInches + 2 * s}" class="cut-border"/><rect width="${b.WidthInches}" height="${b.HeightInches}" class="print-border"/>${lineMarkup(true)}`;
   renderCanvas();
+  renderQuiltPreview();
 }
 function canvasPoint(event) {
   const svg = $('canvas');
@@ -199,6 +273,41 @@ $('dimensions-form').onsubmit = event => {
 $('grid').onchange = () => { checkpoint(); block().GridSizeInches = Number($('grid').value); pending = null; changed(); };
 $('paper').onchange = render;
 $('block-select').onchange = () => { blockIndex = Number($('block-select').value); undo = []; redo = []; pending = null; selected = -1; render(); };
+$('quilt-preset').onchange = () => {
+  const key = $('quilt-preset').value;
+  if (QUILT_PRESETS[key]) {
+    project.Layout.Preset = key;
+    project.Layout.WidthInches = QUILT_PRESETS[key].width;
+    project.Layout.HeightInches = QUILT_PRESETS[key].height;
+    changed();
+  } else {
+    project.Layout.Preset = 'custom';
+    persist();
+    renderQuiltPreview();
+  }
+};
+const updateQuiltSize = () => {
+  const width = Number($('quilt-width').value), height = Number($('quilt-height').value);
+  if (![width, height].every(value => Number.isFinite(value) && value >= 1 && value <= 240)) {
+    notify('Choose quilt dimensions between 1 and 240 inches.');
+    return;
+  }
+  if (width < block().WidthInches || height < block().HeightInches) {
+    notify('The quilt must be at least as large as one block.');
+    return;
+  }
+  project.Layout.Preset = 'custom';
+  project.Layout.WidthInches = width;
+  project.Layout.HeightInches = height;
+  changed();
+};
+$('quilt-width').onchange = updateQuiltSize;
+$('quilt-height').onchange = updateQuiltSize;
+$('alternate-mirrors').onchange = () => {
+  project.Layout.AlternateMirrors = $('alternate-mirrors').checked;
+  changed();
+};
+
 $('new-block').onclick = () => {
   if (project.Blocks.length >= 100) { notify('A project can contain at most 100 blocks.'); return; }
   project.Blocks.push({ Id: crypto.randomUUID(), Name: `Block ${project.Blocks.length + 1}`, WidthInches: 12, HeightInches: 12, GridSizeInches: 0.25, Lines: [], SourceImageOpacity: 0.35 });
