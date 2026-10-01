@@ -138,6 +138,107 @@ export function snapDrawingPoint(block, point, mode = 'intersection', tolerance 
   return point;
 }
 
+
+export function findAnchor(block, point, tolerance = 0.3, mode = 'line') {
+  validateBlock(block);
+  const w = block.WidthInches, h = block.HeightInches;
+  const candidates = [];
+
+  const push = (candidate, kind, priority) => {
+    const distance = Math.hypot(point.X - candidate.X, point.Y - candidate.Y);
+    if (distance <= tolerance) candidates.push({ point: { X: candidate.X, Y: candidate.Y }, kind, distance, priority });
+  };
+
+  for (const vertex of collectIntersections(block)) push(vertex, 'vertex', 0);
+
+  const boundary = [
+    { X: Math.max(0, Math.min(w, point.X)), Y: 0 },
+    { X: w, Y: Math.max(0, Math.min(h, point.Y)) },
+    { X: Math.max(0, Math.min(w, point.X)), Y: h },
+    { X: 0, Y: Math.max(0, Math.min(h, point.Y)) },
+  ];
+  boundary.forEach(candidate => push(candidate, 'edge', 2));
+
+  if (mode === 'line') {
+    for (const line of block.Lines) {
+      const projected = projectPointToSegment(point, line);
+      if (projected.distance <= tolerance) candidates.push({
+        point: { X: projected.X, Y: projected.Y },
+        kind: 'line',
+        distance: projected.distance,
+        priority: 1,
+      });
+    }
+  }
+
+  candidates.sort((a, b) => a.distance - b.distance || a.priority - b.priority);
+  return candidates[0] || null;
+}
+
+function pointOnSegmentInterior(point, line, tolerance = 1e-5) {
+  const projected = projectPointToSegment(point, line);
+  if (projected.distance > tolerance) return false;
+  if (samePoint(point, line.Start, tolerance) || samePoint(point, line.End, tolerance)) return false;
+  return true;
+}
+
+function splitExistingLinesAtPoint(lines, point) {
+  const result = [];
+  for (const line of lines) {
+    if (!pointOnSegmentInterior(point, line)) {
+      result.push(line);
+      continue;
+    }
+    result.push(
+      { ...line, Id: crypto.randomUUID(), End: { X: point.X, Y: point.Y } },
+      { ...line, Id: crypto.randomUUID(), Start: { X: point.X, Y: point.Y } },
+    );
+  }
+  return result;
+}
+
+function collinearOverlap(a, b, c, d) {
+  const cross = (u, v) => u.X * v.Y - u.Y * v.X;
+  const r = { X: b.X - a.X, Y: b.Y - a.Y };
+  if (Math.abs(cross(r, { X: c.X - a.X, Y: c.Y - a.Y })) > 1e-6) return false;
+  if (Math.abs(cross(r, { X: d.X - a.X, Y: d.Y - a.Y })) > 1e-6) return false;
+  const axis = Math.abs(r.X) >= Math.abs(r.Y) ? 'X' : 'Y';
+  const a0 = a[axis], a1 = b[axis], c0 = c[axis], c1 = d[axis];
+  const min1 = Math.min(a0, a1), max1 = Math.max(a0, a1);
+  const min2 = Math.min(c0, c1), max2 = Math.max(c0, c1);
+  return Math.min(max1, max2) - Math.max(min1, min2) > 1e-5;
+}
+
+export function addConstrainedLine(block, rawStart, toward, options = {}) {
+  validateBlock(block);
+  const tolerance = options.tolerance ?? 0.3;
+  const anchorMode = options.anchorMode ?? 'line';
+  const boundaryType = options.boundaryType === 'section' ? 'section' : 'piece';
+
+  const anchor = findAnchor(block, rawStart, tolerance, anchorMode);
+  if (!anchor) throw new Error('Start on a block edge, existing line, or intersection.');
+
+  const end = extendLineToNextHit(block, anchor.point, toward);
+  if (!end || samePoint(anchor.point, end)) throw new Error('Aim toward another line or block boundary.');
+
+  for (const line of block.Lines) {
+    if (collinearOverlap(anchor.point, end, line.Start, line.End)) {
+      throw new Error('A new seam cannot overlap an existing seam.');
+    }
+  }
+
+  let lines = splitExistingLinesAtPoint(block.Lines, anchor.point);
+  lines = splitExistingLinesAtPoint(lines, end);
+  lines.push({
+    Id: crypto.randomUUID(),
+    Start: { X: anchor.point.X, Y: anchor.point.Y },
+    End: { X: end.X, Y: end.Y },
+    BoundaryType: boundaryType,
+  });
+
+  return { ...block, Lines: lines };
+}
+
 function raySegmentHit(start, direction, line) {
   const r = direction;
   const s = { X: line.End.X - line.Start.X, Y: line.End.Y - line.Start.Y };
