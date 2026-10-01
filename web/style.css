@@ -21,3 +21,8 @@ main{max-width:1530px;padding:0 4%;margin:auto}.intro{display:flex;justify-conte
 .allowance-guide{stroke:#c18758;stroke-width:1;stroke-dasharray:4 3;vector-effect:non-scaling-stroke;fill:none;opacity:.9}
 .piece-label{font-family:Inter,ui-sans-serif,sans-serif;font-size:.42px;font-weight:700;text-anchor:middle;dominant-baseline:middle;fill:#29483e;paint-order:stroke;stroke:#fffefb;stroke-width:.08px}
 #line-role,#drawing-snap-mode,#design-mode{margin-top:7px}
+
+.anchor-cue{fill:#fffefb;stroke:#2f6a52;stroke-width:2;vector-effect:non-scaling-stroke;pointer-events:none}
+.anchor-cue.vertex{fill:#d6eadc;stroke-width:2.5}
+.anchor-cue.edge{fill:#fffefb;stroke:#b47745}
+.anchor-cue.line{fill:#fffefb;stroke:#527c61}
