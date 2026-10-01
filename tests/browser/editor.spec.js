@@ -15,7 +15,7 @@ test('draw, undo, redo, save, reload, and export an actual-size PDF', async ({ p
   await expect(page.locator('#sheet-count')).toHaveText('1 sheet · 1 × 1');
   const positions = await page.locator('#canvas').evaluate(svg => {
     const matrix = svg.getScreenCTM();
-    return [new DOMPoint(0.5, 1), new DOMPoint(2.5, 1)].map(p => { const q = p.matrixTransform(matrix); return { x: q.x, y: q.y }; });
+    return [new DOMPoint(0, 1), new DOMPoint(2.5, 1)].map(p => { const q = p.matrixTransform(matrix); return { x: q.x, y: q.y }; });
   });
   await page.mouse.click(positions[0].x, positions[0].y);
   await page.mouse.click(positions[1].x, positions[1].y);
@@ -31,7 +31,8 @@ test('draw, undo, redo, save, reload, and export an actual-size PDF', async ({ p
   const project = JSON.parse(await readFile(projectPath, 'utf8'));
   const current = project.Blocks.at(-1);
   expect(current.WidthInches).toBe(4);
-  expect(current.Lines[0].Start).toEqual({ X: 0.5, Y: 1 });
+  expect(current.Lines[0].Start).toEqual({ X: 0, Y: 1 });
+  expect(current.Lines[0].End).toEqual({ X: 4, Y: 1 });
   await page.reload();
   await page.locator('#block-select').selectOption('1');
   await expect(page.locator('#line-count')).toHaveText('1 seam');
