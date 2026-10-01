@@ -1,5 +1,5 @@
 import './style.css';
-import { analyzePieces, demoProject, extendLineToNextHit, parseProject, planPattern, planQuiltLayout, QUILT_PRESETS, SEAM_ALLOWANCE, snapDrawingPoint } from './pattern.js';
+import { addConstrainedLine, analyzePieces, demoProject, extendLineToNextHit, findAnchor, parseProject, planPattern, planQuiltLayout, QUILT_PRESETS, SEAM_ALLOWANCE, snapDrawingPoint } from './pattern.js';
 import { createPatternPdf } from './pdf.js';
 
 const icons = {
@@ -33,6 +33,9 @@ let cursor = null;
 let selected = -1;
 let undo = [], redo = [];
 let currentLineRole = 'piece';
+let hoverAnchor = null;
+let dragOrigin = null;
+let dragging = false;
 let noticeTimer;
 const block = () => project.Blocks[blockIndex];
 
@@ -61,12 +64,12 @@ $('app').innerHTML = `
         <button id="import-image" class="button outlined full">${icon('image')} Add reference image</button>
         <div id="image-controls" hidden><label class="field range-field">Image opacity<input id="opacity" type="range" min="0" max="1" step="0.05" value="0.35" /></label><button id="remove-image" class="text-button">Remove image</button></div>
         <p class="field-help">Your image stays in your browser. It won’t appear on the printed pattern.</p>
-        <div class="tip-card"><span>START WITH A LINE</span><p>Click a start point, then an end point. Every line becomes a seam on your foundation.</p><small>Esc cancels · Ctrl/⌘ Z undoes</small></div>
+        <div class="tip-card"><span>START ON GEOMETRY</span><p>Begin on a block edge, seam, or intersection. Drag toward the next boundary; QuiltStudio stops at the first line it hits.</p><small>Green = line/vertex · brown = block edge · Esc cancels</small></div>
       </aside>
       <div class="editor panel">
         <div class="editor-toolbar"><div class="tool-group" role="group" aria-label="Drawing tools"><button id="draw-tool" class="tool active" aria-pressed="true">${icon('draw')} Line</button><button id="select-tool" class="tool" aria-pressed="false">${icon('select')} Select</button></div><div class="tool-group"><button id="undo" class="icon-button" aria-label="Undo" title="Undo">${icon('undo')}</button><button id="redo" class="icon-button" aria-label="Redo" title="Redo">${icon('redo')}</button><span class="tool-divider"></span><button id="delete-line" class="icon-button" aria-label="Delete selected seam" title="Delete selected seam">${icon('trash')}</button><span class="tool-divider"></span><button id="clear-drawing" class="tool danger-tool" aria-label="Clear all lines" title="Clear all lines">${icon('trash')} Clear</button></div></div>
-        <div class="canvas-wrap"><div class="canvas-caption"><span>DESIGN VIEW</span><span id="canvas-size"></span></div><svg id="canvas" role="application" aria-label="Block seam drawing canvas. Click two points to draw a seam." tabindex="0"></svg><div class="canvas-legend"><span><i class="legend-line"></i> Seam line</span><span><i class="legend-dot"></i> Endpoint</span><span>Finished block</span></div></div>
-        <div class="editor-footer"><span id="editor-instruction">Click two points to draw a seam</span><span id="line-count"></span></div>
+        <div class="canvas-wrap"><div class="canvas-caption"><span>DESIGN VIEW</span><span id="canvas-size"></span></div><svg id="canvas" role="application" aria-label="Constrained quilt drafting canvas. Start on an edge, seam, or intersection and drag toward the next boundary." tabindex="0"></svg><div class="canvas-legend"><span><i class="legend-line"></i> Seam line</span><span><i class="legend-dot"></i> Endpoint</span><span>Finished block</span></div></div>
+        <div class="editor-footer"><span id="editor-instruction">Start on valid geometry and drag toward the next boundary</span><span id="line-count"></span></div>
       </div>
       <aside class="print-panel panel"><div class="print-heading"><span class="step-dot">02</span><h2>Make it printable</h2></div><p class="print-copy">A foundation that’s ready for paper.</p><div class="preview-wrap"><span class="preview-tag">MIRRORED PRINT VIEW</span><svg id="print-preview" aria-label="Mirrored foundation preview"></svg><div class="preview-caption">+ ¼″ outer seam allowance</div></div>
         <label class="field">Paper size<select id="paper"><option value="letter">US Letter · 8.5 × 11 in</option><option value="a4">A4 · 210 × 297 mm</option></select></label>
@@ -141,7 +144,7 @@ function persist() {
 function checkpoint() { undo.push(structuredClone(block())); if (undo.length > 100) undo.shift(); redo = []; }
 function changed() { persist(); render(); }
 function chooseTool(next) {
-  tool = next; pending = null; cursor = null; selected = -1;
+  tool = next; pending = null; cursor = null; hoverAnchor = null; dragOrigin = null; dragging = false; selected = -1;
   for (const name of ['draw', 'select']) {
     $(`${name}-tool`).classList.toggle('active', tool === name);
     $(`${name}-tool`).setAttribute('aria-pressed', String(tool === name));
@@ -191,7 +194,8 @@ function renderCanvas() {
   for (let x = 0; x <= b.WidthInches; x += displaySpacing) guides += `<line x1="${x}" y1="0" x2="${x}" y2="${b.HeightInches}" class="grid-line"/>`;
   for (let y = 0; y <= b.HeightInches; y += displaySpacing) guides += `<line x1="0" y1="${y}" x2="${b.WidthInches}" y2="${y}" class="grid-line"/>`;
   const previewEnd = pending && cursor ? extendLineToNextHit(b, pending, cursor) || cursor : cursor;
-  $('canvas').innerHTML = `<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" fill="#fffefb"/>${b.SourceImageBase64 ? `<image href="data:image/${b.SourceImageBase64.startsWith('/9j/') ? 'jpeg' : b.SourceImageBase64.startsWith('UklGR') ? 'webp' : b.SourceImageBase64.startsWith('Qk') ? 'bmp' : 'png'};base64,${escape(b.SourceImageBase64)}" x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" opacity="${Number.isFinite(b.SourceImageOpacity) ? Math.max(0, Math.min(1, b.SourceImageOpacity)) : 0.35}"/>` : ''}${guides}${allowanceMarkup()}<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" class="block-border"/>${lineMarkup()}${pieceLabelMarkup()}${pending ? `<circle cx="${pending.X}" cy="${pending.Y}" r="0.12" class="pending-point"/>${previewEnd ? `<line x1="${pending.X}" y1="${pending.Y}" x2="${previewEnd.X}" y2="${previewEnd.Y}" class="pending-line"/>` : ''}` : ''}`;
+  const anchorMarkup = hoverAnchor ? `<circle cx="${hoverAnchor.point.X}" cy="${hoverAnchor.point.Y}" r="${hoverAnchor.kind === 'vertex' ? 0.16 : 0.11}" class="anchor-cue ${hoverAnchor.kind}"/>` : '';
+  $('canvas').innerHTML = `<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" fill="#fffefb"/>${b.SourceImageBase64 ? `<image href="data:image/${b.SourceImageBase64.startsWith('/9j/') ? 'jpeg' : b.SourceImageBase64.startsWith('UklGR') ? 'webp' : b.SourceImageBase64.startsWith('Qk') ? 'bmp' : 'png'};base64,${escape(b.SourceImageBase64)}" x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" opacity="${Number.isFinite(b.SourceImageOpacity) ? Math.max(0, Math.min(1, b.SourceImageOpacity)) : 0.35}"/>` : ''}${guides}${allowanceMarkup()}<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" class="block-border"/>${lineMarkup()}${pieceLabelMarkup()}${anchorMarkup}${pending ? `<circle cx="${pending.X}" cy="${pending.Y}" r="0.12" class="pending-point"/>${previewEnd ? `<line x1="${pending.X}" y1="${pending.Y}" x2="${previewEnd.X}" y2="${previewEnd.Y}" class="pending-line"/>` : ''}` : ''}`;
   $('canvas').classList.toggle('selecting', tool === 'select');
 }
 function renderQuiltPreview() {
@@ -257,6 +261,21 @@ function render() {
   renderCanvas();
   renderQuiltPreview();
 }
+
+function rawCanvasPoint(event) {
+  const svg = $('canvas');
+  const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.getScreenCTM().inverse());
+  if (point.x < -0.08 || point.y < -0.08 || point.x > block().WidthInches + 0.08 || point.y > block().HeightInches + 0.08) return null;
+  return {
+    X: Math.max(0, Math.min(block().WidthInches, point.x)),
+    Y: Math.max(0, Math.min(block().HeightInches, point.y)),
+  };
+}
+function canvasTolerance() {
+  const svg = $('canvas'), rect = svg.getBoundingClientRect();
+  return Math.max(block().WidthInches / Math.max(1, rect.width) * 14, Number($('grid').value) * 0.55);
+}
+
 function canvasPoint(event) {
   const svg = $('canvas');
   const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.getScreenCTM().inverse());
@@ -266,36 +285,100 @@ function canvasPoint(event) {
     X: Math.max(0, Math.min(block().WidthInches, $('snap').checked ? Math.round(point.x / grid) * grid : point.x)),
     Y: Math.max(0, Math.min(block().HeightInches, $('snap').checked ? Math.round(point.y / grid) * grid : point.y)),
   };
-  const rect = svg.getBoundingClientRect();
-  const tolerance = Math.max(block().WidthInches / Math.max(1, rect.width) * 14, grid * 0.55);
-  return snapDrawingPoint(block(), raw, block().DrawingSnapMode || 'intersection', tolerance);
+  return snapDrawingPoint(block(), raw, block().DrawingSnapMode || 'intersection', canvasTolerance());
 }
 function distanceToLine(point, line) {
   const dx = line.End.X - line.Start.X, dy = line.End.Y - line.Start.Y;
   const t = Math.max(0, Math.min(1, ((point.X - line.Start.X) * dx + (point.Y - line.Start.Y) * dy) / (dx * dx + dy * dy || 1)));
   return Math.hypot(point.X - line.Start.X - t * dx, point.Y - line.Start.Y - t * dy);
 }
+
+function completeConstrainedLine(toward) {
+  if (!pending || !toward) return false;
+  try {
+    const next = addConstrainedLine(block(), pending, toward, {
+      tolerance: canvasTolerance(),
+      anchorMode: 'line',
+      boundaryType: currentLineRole,
+    });
+    checkpoint();
+    project.Blocks[blockIndex] = next;
+    pending = null; cursor = null; hoverAnchor = null; dragOrigin = null; dragging = false;
+    changed();
+    return true;
+  } catch (error) {
+    notify(error.message);
+    return false;
+  }
+}
+
 $('canvas').addEventListener('pointerdown', event => {
   if (event.button !== 0) return;
-  const point = canvasPoint(event);
-  if (!point) return;
   $('canvas').focus();
+
   if (tool === 'select') {
+    const raw = rawCanvasPoint(event);
+    if (!raw) return;
     let nearest = -1, distance = block().WidthInches / $('canvas').getBoundingClientRect().width * 12;
-    // Selecting uses the actual pointer instead of snapping to a neighboring grid point.
-    const raw = new DOMPoint(event.clientX, event.clientY).matrixTransform($('canvas').getScreenCTM().inverse());
-    block().Lines.forEach((line, i) => { const d = distanceToLine({ X: raw.x, Y: raw.y }, line); if (d < distance) { distance = d; nearest = i; } });
+    block().Lines.forEach((line, i) => { const d = distanceToLine(raw, line); if (d < distance) { distance = d; nearest = i; } });
     selected = nearest; render(); return;
   }
-  if (!pending) { pending = point; cursor = point; render(); return; }
-  if (Math.hypot(pending.X - point.X, pending.Y - point.Y) < 0.001) { notify('Choose a different direction for this seam.'); return; }
-  if (block().Lines.length >= 5000) { notify('This block has reached the 5,000 seam limit.'); return; }
-  const endpoint = extendLineToNextHit(block(), pending, point);
-  if (!endpoint) { notify('This line could not find another line or block boundary in that direction.'); return; }
-  checkpoint(); block().Lines.push({ Id: crypto.randomUUID(), Start: pending, End: endpoint, BoundaryType: currentLineRole }); pending = null; cursor = null; changed();
+
+  const raw = rawCanvasPoint(event);
+  if (!raw) return;
+
+  if (pending) {
+    const toward = canvasPoint(event) || raw;
+    completeConstrainedLine(toward);
+    return;
+  }
+
+  const anchor = findAnchor(block(), raw, canvasTolerance(), 'line');
+  if (!anchor) {
+    hoverAnchor = null;
+    notify('Start the seam on a block edge, existing line, or intersection.');
+    renderCanvas();
+    return;
+  }
+
+  pending = anchor.point;
+  hoverAnchor = anchor;
+  cursor = anchor.point;
+  dragOrigin = { x: event.clientX, y: event.clientY };
+  dragging = true;
+  try { $('canvas').setPointerCapture(event.pointerId); } catch {}
+  renderCanvas();
 });
-$('canvas').addEventListener('pointermove', event => { if (pending) { cursor = canvasPoint(event); renderCanvas(); } });
-$('canvas').addEventListener('pointerleave', () => { cursor = null; renderCanvas(); });
+
+$('canvas').addEventListener('pointermove', event => {
+  const raw = rawCanvasPoint(event);
+  if (!raw) { hoverAnchor = null; if (!pending) renderCanvas(); return; }
+
+  hoverAnchor = findAnchor(block(), raw, canvasTolerance(), 'line');
+  if (pending) cursor = canvasPoint(event) || raw;
+  renderCanvas();
+});
+
+$('canvas').addEventListener('pointerup', event => {
+  if (!dragging || !pending) return;
+  const moved = dragOrigin ? Math.hypot(event.clientX - dragOrigin.x, event.clientY - dragOrigin.y) : 0;
+  dragging = false;
+  try { $('canvas').releasePointerCapture(event.pointerId); } catch {}
+  if (moved >= 4) {
+    const toward = canvasPoint(event) || rawCanvasPoint(event);
+    completeConstrainedLine(toward);
+  } else {
+    dragOrigin = null;
+    renderCanvas();
+  }
+});
+
+$('canvas').addEventListener('pointerleave', () => {
+  if (!dragging) hoverAnchor = null;
+  if (!pending) cursor = null;
+  renderCanvas();
+});
+
 $('draw-tool').onclick = () => chooseTool('draw');
 $('select-tool').onclick = () => chooseTool('select');
 $('undo').onclick = () => { if (!undo.length) return; redo.push(structuredClone(block())); project.Blocks[blockIndex] = undo.pop(); pending = null; selected = -1; changed(); };
@@ -439,7 +522,7 @@ $('load-sample').onclick = () => {
 };
 document.addEventListener('keydown', event => {
   if (event.target.closest('input, select, textarea')) return;
-  if (event.key === 'Escape') { pending = null; cursor = null; selected = -1; render(); }
+  if (event.key === 'Escape') { pending = null; cursor = null; hoverAnchor = null; dragOrigin = null; dragging = false; selected = -1; render(); }
   if (event.key === 'Delete' || event.key === 'Backspace') { if (selected >= 0) { event.preventDefault(); $('delete-line').click(); } }
   if (event.ctrlKey || event.metaKey) {
     if (event.key.toLowerCase() === 'z') { event.preventDefault(); $(event.shiftKey ? 'redo' : 'undo').click(); }
