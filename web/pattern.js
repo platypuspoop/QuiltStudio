@@ -171,7 +171,7 @@ export function findAnchor(block, point, tolerance = 0.3, mode = 'line') {
     }
   }
 
-  candidates.sort((a, b) => a.distance - b.distance || a.priority - b.priority);
+  candidates.sort((a, b) => a.priority - b.priority || a.distance - b.distance);
   return candidates[0] || null;
 }
 
