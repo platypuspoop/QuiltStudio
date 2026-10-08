@@ -27,9 +27,9 @@ npm run dev
 
 Open the address printed by the development server. Changes to `web/` update the app automatically. Stop it with **Ctrl+C**.
 
-Draw each seam by clicking two endpoints. Select a seam to delete it, or use Undo/Redo. Import a reference image to trace, change the finished dimensions, select Letter or A4, and download the PDF. The reference image is excluded from the PDF.
+Start on a block edge or existing seam and drag toward another boundary (two-click drafting also works). Lines stop at the first seam unless **Continue through lines** is enabled. Right-click a seam to delete its whole stroke, or select it and use Delete. Undo/Redo also restores deletions and confirmed Clear operations. Import a reference image to trace, change the finished dimensions, select Letter or A4, and download the PDF. The reference image is excluded from the PDF.
 
-Projects are saved in this browser's local storage. Use **Save a copy** to download a `.quiltstudio` file as a backup or to move it between computers; **Open project** loads it again. Existing version 1 Windows projects are supported when their geometry is within the browser prototype's limits (1–60 inches per dimension, up to 100 blocks and 5,000 seams per block). PNG, JPEG, BMP, and WebP references are supported; convert TIFF references before using them in a browser. Storage and imported images stay on your device; there is no login or cloud sync.
+Projects are saved in this browser's local storage. Use **Save a copy** to download a `.quiltstudio` file as a backup or to move it between computers; **Open project** loads it again. Existing version 1 Windows projects are supported when their geometry is within the browser prototype's limits (1–240 inches per dimension, up to 100 blocks and 5,000 seams per block). PNG, JPEG, BMP, and WebP references are supported; convert TIFF references before using them in a browser. Storage and imported images stay on your device; there is no login or cloud sync.
 
 ## Make the browser version available online
 
@@ -58,23 +58,28 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-On Linux, Playwright may also need system libraries (`npx playwright install --with-deps chromium`). In this cloud environment, Chromium is already installed; use:
-
-```sh
-PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:browser
-```
+On Linux, Playwright may also need system libraries (`npx playwright install --with-deps chromium`). An existing compatible Chromium can be used with `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
 
 GitHub Actions runs the unit/PDF tests, production build, and browser tests for pushes and pull requests.
 
 ## What the prototype verifies
 
 - Vector PDFs use **72 points per inch**, independent of screen size or browser zoom.
-- The foundation is mirrored horizontally, with a ¼-inch allowance around the finished block.
+- Each lettered foundation prints separately, mirrored horizontally, with a joined ¼-inch outline around its perimeter only.
 - Letter and A4 paper sizes retain their physical dimensions.
 - Oversize patterns tile with ¼-inch overlap, page coordinates, and alignment guides.
 - Every sheet includes an exact 1-inch calibration square and print-scale instructions.
 
-This milestone exports **seam templates**. It does not yet detect closed pieces, label A1/A2/etc., split a design into sewable sections, or validate sewing order. A drawing is not automatically a sewable FPP pattern. Fabric matching and the quilt composer remain in the original Windows prototype and have not yet been ported.
+## Drafting, pieces, and fabric colors
+
+- **Automatic sections:** a starting pair gets numbers 1/2; straight attachments get the next numbers. A second independent bisector starts a new section. This is a drafting heuristic, not a guarantee of sewability.
+- **Manual corrections:** select a piece in **Pieces & Colors**, enter a label such as B1 or A4, and apply it. Occupied labels exchange places. **Apply letter to whole section** renames all its pieces (exchanging letters if the target exists). **Recalculate automatic labels** removes overrides while retaining colors.
+- **Colors:** choose a fabric color, enable **Paint pieces**, and click a piece. Colors appear in the design and repeated/mirrored quilt preview. Export adds a numbered, colored box below each label and a fabric key. Codes rank colors by the number of pieces using them; ties sort by hex code. These are chosen colors, not fabric-brand matches.
+- **Curves:** choose Curve, Half circle, or Quarter circle; click two anchored endpoints, then a bend point/side. Curves use connected chords with at most 0.003-inch chord error. They create closed pieces and support intersections, colors, symmetry, undo, and export. Curved seams require curved piecing; they are not validated as straight-seam FPP.
+- **Drawing symmetry:** horizontal/vertical axis toggles mirror new strokes in one undo operation. Quilt-layout mirroring in step 3 remains a separate control.
+- **Printing:** use the Foundation section selector to inspect each mirrored template. Only section perimeter edges receive seam allowance, including all external sides of a rectangle. Internal A1/A2/etc. seams stay solid with no added allowance. Disconnected sections, floating fragments, and self-intersecting offset outlines must be corrected before export.
+
+Labels and colors are included in project files and browser saves. Resizing preserves them; subdivided pieces inherit their parent's color. Deleting a seam also removes dependent dangling fragments; Undo restores the whole snapshot. Old bundled example PDFs still demonstrate the earlier whole-block scale milestone. New exports use separate foundations. Physical printing and sewing-order review remain necessary.
 
 ## Where things live
 

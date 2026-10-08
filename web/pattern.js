@@ -62,6 +62,13 @@ export function validateBlock(block) {
       }
     }
   }
+  if (block.PieceSettings != null) {
+    if (typeof block.PieceSettings !== 'object' || Array.isArray(block.PieceSettings) || Object.keys(block.PieceSettings).length > 10000) throw new Error('Invalid piece settings.');
+    for (const setting of Object.values(block.PieceSettings)) {
+      if (!setting || typeof setting !== 'object' || setting.Label && !/^[A-Z]{1,3}[1-9]\d{0,3}$/.test(setting.Label) || setting.Color && !/^#[0-9a-f]{6}$/i.test(setting.Color)) throw new Error('Invalid piece label or color.');
+      if (setting.Polygon && (!Array.isArray(setting.Polygon) || setting.Polygon.length > 5000 || setting.Polygon.some(p => !p || !Number.isFinite(p.X) || !Number.isFinite(p.Y)))) throw new Error('Invalid saved piece geometry.');
+    }
+  }
   return block;
 }
 
@@ -190,8 +197,8 @@ function splitExistingLinesAtPoint(lines, point) {
       continue;
     }
     result.push(
-      { ...line, Id: crypto.randomUUID(), End: { X: point.X, Y: point.Y } },
-      { ...line, Id: crypto.randomUUID(), Start: { X: point.X, Y: point.Y } },
+      { ...line, DraftId: line.DraftId || line.Id, Id: crypto.randomUUID(), End: { X: point.X, Y: point.Y } },
+      { ...line, DraftId: line.DraftId || line.Id, Id: crypto.randomUUID(), Start: { X: point.X, Y: point.Y } },
     );
   }
   return result;
@@ -218,21 +225,32 @@ export function addConstrainedLine(block, rawStart, toward, options = {}) {
   const anchor = findAnchor(block, rawStart, tolerance, anchorMode);
   if (!anchor) throw new Error('Start on a block edge, existing line, or intersection.');
 
-  const end = extendLineToNextHit(block, anchor.point, toward);
+  const end = extendLineToNextHit(block, anchor.point, toward, options.crossLines);
   if (!end || samePoint(anchor.point, end)) throw new Error('Aim toward another line or block boundary.');
 
-  for (const line of block.Lines) {
+  for (const line of [...boundarySegments(block), ...block.Lines]) {
     if (collinearOverlap(anchor.point, end, line.Start, line.End)) {
       throw new Error('A new seam cannot overlap an existing seam.');
     }
   }
 
-  let lines = splitExistingLinesAtPoint(block.Lines, anchor.point);
+  let lines = splitExistingLinesAtPoint(block.Lines.map((line, i) => ({ ...line, DraftId: line.DraftId || line.Id || `legacy-${i}`, Order: line.Order ?? i })), anchor.point);
   lines = splitExistingLinesAtPoint(lines, end);
-  lines.push({
-    Id: crypto.randomUUID(),
-    Start: { X: anchor.point.X, Y: anchor.point.Y },
-    End: { X: end.X, Y: end.Y },
+  const draftId = options.draftId || crypto.randomUUID();
+  const order = Math.max(-1, ...block.Lines.map((line, i) => line.Order ?? i)) + 1;
+  const cuts = [anchor.point, end];
+  if (options.crossLines) {
+    for (const line of lines) {
+      const hit = segmentIntersection(anchor.point, end, line.Start, line.End);
+      if (hit && !cuts.some(p => samePoint(p, hit))) cuts.push({ X: hit.X, Y: hit.Y });
+    }
+    cuts.sort((a, b) => Math.hypot(a.X - anchor.point.X, a.Y - anchor.point.Y) - Math.hypot(b.X - anchor.point.X, b.Y - anchor.point.Y));
+    for (const point of cuts) lines = splitExistingLinesAtPoint(lines, point);
+  }
+  for (let i = 0; i < cuts.length - 1; i++) lines.push({
+    Id: crypto.randomUUID(), DraftId: draftId, Order: order,
+    Start: { ...cuts[i] },
+    End: { ...cuts[i + 1] },
     BoundaryType: boundaryType,
   });
 
@@ -252,12 +270,12 @@ function raySegmentHit(start, direction, line) {
   return { X: start.X + t * r.X, Y: start.Y + t * r.Y, t };
 }
 
-export function extendLineToNextHit(block, start, toward) {
+export function extendLineToNextHit(block, start, toward, crossLines = false) {
   validateBlock(block);
   const direction = { X: toward.X - start.X, Y: toward.Y - start.Y };
   if (Math.hypot(direction.X, direction.Y) < EPSILON) return null;
   let best = null;
-  for (const line of [...boundarySegments(block), ...block.Lines]) {
+  for (const line of [...boundarySegments(block), ...(crossLines ? [] : block.Lines)]) {
     const hit = raySegmentHit(start, direction, line);
     if (hit && (!best || hit.t < best.t)) best = hit;
   }
@@ -286,7 +304,7 @@ function splitGeometry(block) {
       if (samePoint(points[i], points[i + 1])) continue;
       const a = vertexIndex(points[i]), b = vertexIndex(points[i + 1]);
       const key = a < b ? `${a}:${b}` : `${b}:${a}`;
-      if (!edges.some(edge => edge.key === key)) edges.push({ a, b, key, type: segment.BoundaryType || 'piece', border: !!segment.Border });
+      if (!edges.some(edge => edge.key === key)) edges.push({ a, b, key, type: segment.BoundaryType || 'piece', border: !!segment.Border, sourceId: segment.DraftId || segment.Id || `legacy-${index}`, order: segment.Order ?? index, curved: !!segment.Curve });
     }
   });
   return { vertices, edges };
@@ -328,7 +346,7 @@ export function analyzePieces(block) {
         const reverseIndex = list.findIndex(item => item.to === a);
         if (reverseIndex < 0) break;
         const chosen = list[(reverseIndex - 1 + list.length) % list.length];
-        faceEdges.push(chosen.edgeIndex);
+        faceEdges.push(list[reverseIndex].edgeIndex);
         a = b; b = chosen.to;
         if (a === start && b === next) break;
       }
@@ -338,10 +356,7 @@ export function analyzePieces(block) {
           return sum + point.X * q.Y - q.X * point.Y;
         }, 0) / 2;
         if (area > 1e-5) {
-          const centroid = {
-            X: polygon.reduce((sum, point) => sum + point.X, 0) / polygon.length,
-            Y: polygon.reduce((sum, point) => sum + point.Y, 0) / polygon.length,
-          };
+          const centroid = interiorPoint(polygon, area);
           faces.push({ polygon, area, centroid, edgeIndexes: faceEdges });
         }
       }
@@ -366,27 +381,83 @@ export function analyzePieces(block) {
     if (!groups.has(root)) groups.set(root, []);
     groups.get(root).push(i);
   });
-  const sections = [...groups.values()].map(faceIndexes => {
-    const centroid = {
-      X: faceIndexes.reduce((sum, i) => sum + faces[i].centroid.X * faces[i].area, 0) / faceIndexes.reduce((sum, i) => sum + faces[i].area, 0),
-      Y: faceIndexes.reduce((sum, i) => sum + faces[i].centroid.Y * faces[i].area, 0) / faceIndexes.reduce((sum, i) => sum + faces[i].area, 0),
-    };
-    return { faceIndexes, centroid };
-  }).sort((a, b) => a.centroid.Y - b.centroid.Y || a.centroid.X - b.centroid.X);
-
-  sections.forEach((section, sectionIndex) => {
+  // Peel complete straight attachments backwards. The remaining pair is the
+  // section's single starting seam. A second unpeelable bisector splits sections.
+  const sectionGroups = [];
+  const sharedEdges = (left, right) => [...edgeFaces.entries()]
+    .filter(([, ff]) => ff.length === 2 && ff.some(i => left.includes(i)) && ff.some(i => right.includes(i)))
+    .map(([i]) => edges[i]);
+  const collinear = list => {
+    if (!list.length || list.some(edge => edge.curved)) return false;
+    const a = vertices[list[0].a], b = vertices[list[0].b];
+    const length = Math.hypot(b.X - a.X, b.Y - a.Y);
+    return list.every(e => [vertices[e.a], vertices[e.b]].every(p =>
+      Math.abs((b.X - a.X) * (p.Y - a.Y) - (b.Y - a.Y) * (p.X - a.X)) <= length * 1e-5));
+  };
+  const partition = indexes => {
+    if (indexes.length <= 2) { sectionGroups.push(indexes); return; }
+    const remaining = [...indexes], attachments = [];
+    while (remaining.length > 2) {
+      const candidates = remaining.filter(i => collinear(sharedEdges([i], remaining.filter(j => j !== i))))
+        .sort((a, b) => Math.max(...sharedEdges([b], remaining.filter(j => j !== b)).map(e => e.order)) -
+          Math.max(...sharedEdges([a], remaining.filter(j => j !== a)).map(e => e.order)));
+      if (!candidates.length) break;
+      const i = candidates[0]; attachments.push(i); remaining.splice(remaining.indexOf(i), 1);
+    }
+    if (remaining.length <= 2) {
+      sectionGroups.push([...remaining, ...attachments.reverse()]); return;
+    }
+    // Find a complete straight separator: no face may straddle its supporting line.
+    const separators = [...new Set(remaining.flatMap(i => faces[i].edgeIndexes))]
+      .map(i => edges[i]).filter(e => !e.border && !e.curved).sort((a, b) => a.order - b.order);
+    for (const edge of separators) {
+      const a = vertices[edge.a], b = vertices[edge.b];
+      const side = p => (b.X - a.X) * (p.Y - a.Y) - (b.Y - a.Y) * (p.X - a.X);
+      const left = [], right = [];
+      let crosses = false;
+      for (const i of indexes) {
+        const values = faces[i].polygon.map(side);
+        if (values.some(v => v > 1e-5) && values.some(v => v < -1e-5)) { crosses = true; break; }
+        (side(faces[i].centroid) > 0 ? left : right).push(i);
+      }
+      if (!crosses && left.length && right.length) { partition(left); partition(right); return; }
+    }
+    // Ambiguous/curved topology remains editable; never invent a sewing order.
+    remaining.forEach(i => sectionGroups.push([i]));
+    attachments.reverse().forEach(i => sectionGroups.push([i]));
+  };
+  [...groups.values()].forEach(partition);
+  sectionGroups.sort((a, b) => Math.min(...a.map(i => faces[i].centroid.Y)) - Math.min(...b.map(i => faces[i].centroid.Y)) ||
+    Math.min(...a.map(i => faces[i].centroid.X)) - Math.min(...b.map(i => faces[i].centroid.X)));
+  sectionGroups.forEach((ordered, sectionIndex) => {
     const letter = alphaLabel(sectionIndex);
-    const ordered = [...section.faceIndexes].sort((a, b) => faces[a].centroid.Y - faces[b].centroid.Y || faces[a].centroid.X - faces[b].centroid.X);
-    ordered.forEach((faceIndex, pieceIndex) => {
-      faces[faceIndex].section = letter;
-      faces[faceIndex].label = ordered.length === 1 ? letter : `${letter}${pieceIndex + 1}`;
+    ordered.forEach((i, pieceIndex) => {
+      const face = faces[i];
+      face.key = polygonKey(face.polygon);
+      face.section = letter;
+      face.label = `${letter}${pieceIndex + 1}`;
+      const setting = block.PieceSettings?.[face.key];
+      if (setting?.Label) { face.label = setting.Label; face.section = setting.Label.match(/^[A-Z]+/)[0]; }
+      face.color = setting?.Color || null;
+      if (!face.color) {
+        const inherited = Object.values(block.PieceSettings || {}).find(item => item.Color && item.Polygon && pointInPolygon(face.centroid, item.Polygon));
+        face.color = inherited?.Color || null;
+      }
     });
   });
+  const usedLabels = new Set(Object.values(block.PieceSettings || {}).map(s => s.Label).filter(Boolean));
+  for (const face of faces.filter(f => !block.PieceSettings?.[f.key]?.Label)) {
+    let n = Number(face.label.match(/\d+$/)[0]);
+    while (usedLabels.has(`${face.section}${n}`)) n++;
+    face.label = `${face.section}${n}`; usedLabels.add(face.label);
+  }
+  const sections = [];
+  for (const letter of [...new Set(faces.map(f => f.section))].sort()) {
+    const faceIndexes = faces.map((f, i) => f.section === letter ? i : -1).filter(i => i >= 0);
+    sections.push({ letter, faceIndexes });
+  }
+  return { faces, sections, edges: edges.map((edge, i) => ({ ...edge, Start: vertices[edge.a], End: vertices[edge.b], faceIndexes: edgeFaces.get(i) || [] })) };
 
-  return {
-    faces,
-    edges: edges.map(edge => ({ ...edge, Start: vertices[edge.a], End: vertices[edge.b] })),
-  };
 }
 
 // All PDF coordinates use points: 72 points are exactly one physical inch.
@@ -480,4 +551,268 @@ export function parseProject(text) {
     }
   });
   return project;
+}
+
+export function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i], b = polygon[j];
+    if ((a.Y > point.Y) !== (b.Y > point.Y) && point.X < (b.X - a.X) * (point.Y - a.Y) / (b.Y - a.Y) + a.X) inside = !inside;
+  }
+  return inside;
+}
+function simplifyPolygon(polygon) {
+  return polygon.filter((p, i) => {
+    const a = polygon[(i + polygon.length - 1) % polygon.length], b = polygon[(i + 1) % polygon.length];
+    return Math.abs((p.X - a.X) * (b.Y - p.Y) - (p.Y - a.Y) * (b.X - p.X)) > 1e-8;
+  });
+}
+export function polygonKey(polygon) {
+  const pts = simplifyPolygon(polygon).map(p => `${p.X.toFixed(6)},${p.Y.toFixed(6)}`);
+  const variants = pts.map((_, i) => [...pts.slice(i), ...pts.slice(0, i)].join(';'));
+  return variants.sort()[0];
+}
+export function setPieceSetting(block, key, update) {
+  const analysis = analyzePieces(block), face = analysis.faces.find(f => f.key === key);
+  if (!face) throw new Error('Select a current piece.');
+  if (update.Label && !/^[A-Z]{1,3}[1-9]\d{0,3}$/.test(update.Label)) throw new Error('Use a section letter and number, such as A1 or B4.');
+  if (update.Color && !/^#[0-9a-f]{6}$/i.test(update.Color)) throw new Error('Choose a valid color.');
+  const next = structuredClone(block);
+  next.PieceSettings ||= {};
+  if (update.Label) {
+    const occupied = analysis.faces.find(f => f.key !== key && f.label === update.Label);
+    if (occupied) next.PieceSettings[occupied.key] = { ...next.PieceSettings[occupied.key], Label: face.label, Polygon: occupied.polygon, Color: occupied.color };
+  }
+  next.PieceSettings[key] = { ...next.PieceSettings[key], Polygon: face.polygon, ...update };
+  return next;
+}
+export function colorLegend(analysis) {
+  const counts = new Map();
+  analysis.faces.forEach(f => { if (f.color) counts.set(f.color.toLowerCase(), (counts.get(f.color.toLowerCase()) || 0) + 1); });
+  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([color, count], i) => ({ color, count, code: i + 1 }));
+}
+
+// Directed face boundaries cancel inside each section, leaving its perimeter.
+export function sectionLoops(analysis, section) {
+  const selected = new Set(section.faceIndexes);
+  const boundary = [];
+  section.faceIndexes.forEach(i => {
+    const face = analysis.faces[i];
+    face.polygon.forEach((a, j) => {
+      const edge = analysis.edges[face.edgeIndexes[j]];
+      if (edge.faceIndexes.filter(k => selected.has(k)).length !== 1) return;
+      boundary.push({ a, b: face.polygon[(j + 1) % face.polygon.length] });
+    });
+  });
+  const loops = [];
+  while (boundary.length) {
+    const first = boundary.shift(), polygon = [first.a];
+    let end = first.b;
+    while (!samePoint(end, first.a)) {
+      polygon.push(end);
+      const i = boundary.findIndex(e => samePoint(e.a, end));
+      if (i < 0) throw new Error(`Section ${section.letter} has an open boundary. Correct its pieces before printing.`);
+      end = boundary.splice(i, 1)[0].b;
+    }
+    loops.push(simplifyPolygon(polygon));
+  }
+  return loops;
+}
+export function offsetPolygon(polygon, distance = SEAM_ALLOWANCE) {
+  const offsetEdges = polygon.map((p, i) => {
+    const q = polygon[(i + 1) % polygon.length], dx = q.X - p.X, dy = q.Y - p.Y, len = Math.hypot(dx, dy);
+    return { a: { X: p.X + dy / len * distance, Y: p.Y - dx / len * distance }, b: { X: q.X + dy / len * distance, Y: q.Y - dx / len * distance } };
+  });
+  const result = [];
+  offsetEdges.forEach((e, i) => {
+    const prev = offsetEdges[(i + offsetEdges.length - 1) % offsetEdges.length];
+    const r = { X: prev.b.X - prev.a.X, Y: prev.b.Y - prev.a.Y }, s = { X: e.b.X - e.a.X, Y: e.b.Y - e.a.Y };
+    const den = r.X * s.Y - r.Y * s.X;
+    if (Math.abs(den) < 1e-10) { result.push(e.a); return; }
+    const q = { X: e.a.X - prev.a.X, Y: e.a.Y - prev.a.Y }, t = (q.X * s.Y - q.Y * s.X) / den;
+    const p = { X: prev.a.X + t * r.X, Y: prev.a.Y + t * r.Y };
+    if (Math.hypot(p.X - polygon[i].X, p.Y - polygon[i].Y) > distance * 16) result.push(prev.b, e.a);
+    else result.push(p);
+  });
+  for (let i = 0; i < result.length; i++) for (let j = i + 2; j < result.length; j++) {
+    if (i === 0 && j === result.length - 1) continue;
+    if (segmentIntersection(result[i], result[(i + 1) % result.length], result[j], result[(j + 1) % result.length])) throw new Error('A section is too narrow for a clean 1/4-inch outline. Split it into smaller sections before printing.');
+  }
+  return result;
+}
+export function planSectionPatterns(block, paperKey = 'letter') {
+  const analysis = analyzePieces(block), legend = colorLegend(analysis);
+  if (Math.abs(analysis.faces.reduce((sum, f) => sum + f.area, 0) - block.WidthInches * block.HeightInches) > 1e-4) throw new Error('Close the pieces before printing.');
+  for (const edge of analysis.edges.filter(e => !e.border)) if (edge.faceIndexes.length !== 2 || edge.faceIndexes[0] === edge.faceIndexes[1]) throw new Error('Remove floating seam fragments before printing.');
+  return analysis.sections.map(section => {
+    const loops = sectionLoops(analysis, section);
+    if (loops.filter(poly => poly.reduce((sum, p, i) => { const q = poly[(i + 1) % poly.length]; return sum + p.X * q.Y - q.X * p.Y; }, 0) > 0).length > 1) throw new Error(`Section ${section.letter} contains disconnected pieces. Give each connected foundation its own letter.`);
+    const outlines = loops.map(loop => offsetPolygon(loop));
+    const points = outlines.flat();
+    const minX = Math.min(...points.map(p => p.X)), minY = Math.min(...points.map(p => p.Y));
+    const maxX = Math.max(...points.map(p => p.X)), maxY = Math.max(...points.map(p => p.Y));
+    const width = maxX - minX, height = maxY - minY;
+    // Reuse physical tile planning; the section bounds already include allowance.
+    const plan = planPattern({ ...block, WidthInches: Math.min(240, Math.max(1, width)), HeightInches: Math.min(240, Math.max(1, height)), Lines: [] }, paperKey);
+    plan.width = width * 72; plan.height = height * 72;
+    plan.columns = 1 + Math.ceil(Math.max(0, plan.width - plan.tileWidth) / (plan.tileWidth - plan.overlap));
+    plan.rows = 1 + Math.ceil(Math.max(0, plan.height - plan.tileHeight) / (plan.tileHeight - plan.overlap));
+    plan.tiles = [];
+    for (let row = 0; row < plan.rows; row++) for (let column = 0; column < plan.columns; column++) plan.tiles.push({ row, column, x: column * (plan.tileWidth - plan.overlap), y: row * (plan.tileHeight - plan.overlap) });
+    const transform = p => ({ x: (maxX - p.X) * 72, y: (p.Y - minY) * 72 });
+    const selected = new Set(section.faceIndexes);
+    const seams = analysis.edges.filter(e => e.faceIndexes.some(i => selected.has(i)));
+    return { ...plan, letter: section.letter, loops, outlines, minX, minY, maxX, maxY, transform, legend,
+      lines: seams.map(e => ({ start: transform(e.Start), end: transform(e.End) })),
+      cuts: outlines.flatMap(poly => poly.map((p, i) => ({ start: transform(p), end: transform(poly[(i + 1) % poly.length]) }))),
+      faces: section.faceIndexes.map(i => analysis.faces[i]), curved: seams.some(e => e.curved) };
+  });
+}
+
+// Curves are stored as connected, identified chord segments with <=0.003-inch
+// chord error. This keeps intersections, faces and print geometry in one graph.
+export function sampleCurve(start, end, bend, kind = 'curve') {
+  const dx = end.X - start.X, dy = end.Y - start.Y, chord = Math.hypot(dx, dy);
+  if (chord < 1e-5) throw new Error('Choose distinct curve endpoints.');
+  const side = Math.sign(dx * (bend.Y - start.Y) - dy * (bend.X - start.X)) || 1;
+  let points;
+  if (kind === 'curve') {
+    const control = { X: 2 * bend.X - (start.X + end.X) / 2, Y: 2 * bend.Y - (start.Y + end.Y) / 2 };
+    const second = Math.hypot(start.X - 2 * control.X + end.X, start.Y - 2 * control.Y + end.Y);
+    const n = Math.max(8, Math.ceil(Math.sqrt(second / (4 * 0.003))));
+    if (n > 512) throw new Error('Use a smaller curve.');
+    points = Array.from({ length: n + 1 }, (_, i) => {
+      const t = i / n, u = 1 - t;
+      return { X: u * u * start.X + 2 * u * t * control.X + t * t * end.X, Y: u * u * start.Y + 2 * u * t * control.Y + t * t * end.Y };
+    });
+  } else {
+    const angle = kind === 'half' ? Math.PI : Math.PI / 2;
+    const radius = chord / (2 * Math.sin(angle / 2));
+    const distance = kind === 'half' ? 0 : chord / 2;
+    const center = { X: (start.X + end.X) / 2 + dy / chord * distance * side, Y: (start.Y + end.Y) / 2 - dx / chord * distance * side };
+    const a = Math.atan2(start.Y - center.Y, start.X - center.X);
+    const n = Math.max(8, Math.ceil(angle / (2 * Math.acos(Math.max(-1, 1 - 0.003 / radius)))));
+    if (n > 512) throw new Error('Use a smaller arc.');
+    points = Array.from({ length: n + 1 }, (_, i) => ({ X: center.X + radius * Math.cos(a - side * angle * i / n), Y: center.Y + radius * Math.sin(a - side * angle * i / n) }));
+  }
+  points[0] = { ...start }; points[points.length - 1] = { ...end };
+  return points;
+}
+export function addCurve(block, start, end, bend, options = {}) {
+  const a = findAnchor(block, start, options.tolerance ?? 0.3, 'line'), b = findAnchor(block, end, options.tolerance ?? 0.3, 'line');
+  if (!a || !b) throw new Error('Both curve endpoints must touch a block edge or seam.');
+  let points = sampleCurve(a.point, b.point, bend, options.kind);
+  if (points.some(p => p.X < -EPSILON || p.Y < -EPSILON || p.X > block.WidthInches + EPSILON || p.Y > block.HeightInches + EPSILON)) throw new Error('The curve must stay inside the block. Aim the bend inside.');
+  points = points.map(p => ({ X: Math.max(0, Math.min(block.WidthInches, p.X)), Y: Math.max(0, Math.min(block.HeightInches, p.Y)) }));
+  let lines = block.Lines.map((l, i) => ({ ...structuredClone(l), DraftId: l.DraftId || l.Id || `legacy-${i}`, Order: l.Order ?? i })), additions = [];
+  const draft = crypto.randomUUID(), order = Math.max(-1, ...lines.map((l, i) => l.Order ?? i)) + 1;
+  let stopped = false;
+  for (let i = 0; i < points.length - 1 && !stopped; i++) {
+    const cuts = [{ ...points[i], t: 0 }, { ...points[i + 1], t: 1 }];
+    let firstHit = null;
+    for (const line of lines) {
+      if (collinearOverlap(points[i], points[i + 1], line.Start, line.End)) throw new Error('The curve overlaps an existing seam.');
+      const hit = segmentIntersection(points[i], points[i + 1], line.Start, line.End);
+      if (hit && hit.t > 1e-5) {
+        if (!firstHit || hit.t < firstHit.t) firstHit = hit;
+        if (!cuts.some(p => samePoint(p, hit))) cuts.push(hit);
+      }
+    }
+    cuts.sort((a, b) => a.t - b.t);
+    if (!options.crossLines && firstHit) {
+      const cutoff = cuts.findIndex(p => samePoint(p, firstHit));
+      cuts.splice(cutoff + 1); stopped = true;
+    }
+    for (const p of cuts) lines = splitExistingLinesAtPoint(lines, p);
+    for (let j = 0; j < cuts.length - 1; j++) if (!samePoint(cuts[j], cuts[j + 1])) additions.push({ Id: crypto.randomUUID(), DraftId: draft, Order: order, Curve: options.kind || 'curve', BoundaryType: options.boundaryType || 'piece', Start: { X: cuts[j].X, Y: cuts[j].Y }, End: { X: cuts[j + 1].X, Y: cuts[j + 1].Y } });
+  }
+  const next = { ...block, Lines: [...lines, ...additions] };
+  validateBlock(next);
+  if (analyzePieces(next).faces.length <= analyzePieces(block).faces.length) throw new Error('The curve must divide a closed piece.');
+  return next;
+}
+export function applySymmetry(before, after, horizontal = false, vertical = false) {
+  if (!horizontal && !vertical) return after;
+  const ids = new Set(before.Lines.map((l, i) => l.DraftId || l.Id || `legacy-${i}`));
+  const additions = after.Lines.filter(l => !ids.has(l.DraftId || l.Id));
+  let lines = [...after.Lines];
+  for (const [mx, my] of [[vertical, false], [false, horizontal], [vertical, horizontal]].filter(([x, y]) => x || y)) {
+    const drafts = new Map();
+    for (const line of additions) {
+      const tx = p => ({ X: mx ? before.WidthInches - p.X : p.X, Y: my ? before.HeightInches - p.Y : p.Y });
+      const a = tx(line.Start), b = tx(line.End);
+      if (lines.some(l => samePoint(a, l.Start) && samePoint(b, l.End) || samePoint(a, l.End) && samePoint(b, l.Start))) continue;
+      const source = line.DraftId || line.Id;
+      if (!drafts.has(source)) drafts.set(source, crypto.randomUUID());
+      lines.push({ ...line, Id: crypto.randomUUID(), DraftId: drafts.get(source), Start: a, End: b });
+    }
+  }
+  // Normalize every crossing after atomic mirroring, including original seams.
+  const graph = splitGeometry({ ...after, Lines: lines });
+  const planar = [];
+  for (const edge of graph.edges.filter(e => !e.border)) {
+    const a = graph.vertices[edge.a], b = graph.vertices[edge.b];
+    const source = lines.find(l => projectPointToSegment(a, l).distance < 1e-5 && projectPointToSegment(b, l).distance < 1e-5);
+    planar.push({ ...source, Id: crypto.randomUUID(), Start: a, End: b });
+  }
+  return { ...after, Lines: planar };
+}
+export function deleteDraft(block, index) {
+  const selected = block.Lines[index];
+  if (!selected) return block;
+  const draft = selected.DraftId || selected.Id;
+  let lines = block.Lines.filter((l, i) => draft ? (l.DraftId || l.Id) !== draft : i !== index);
+  // Remove dangling dependent fragments rather than leave open, unprintable pieces.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    lines = lines.filter((line, i) => {
+      const anchored = p => boundarySegments(block).some(e => projectPointToSegment(p, e).distance < 1e-5) || lines.some((e, j) => j !== i && projectPointToSegment(p, e).distance < 1e-5);
+      if (anchored(line.Start) && anchored(line.End)) return true;
+      changed = true; return false;
+    });
+  }
+  return { ...block, Lines: lines };
+}
+
+function interiorPoint(polygon, area) {
+  let x = 0, y = 0;
+  polygon.forEach((p, i) => { const q = polygon[(i + 1) % polygon.length], cross = p.X * q.Y - q.X * p.Y; x += (p.X + q.X) * cross; y += (p.Y + q.Y) * cross; });
+  const center = { X: x / (6 * area), Y: y / (6 * area) };
+  if (pointInPolygon(center, polygon)) return center;
+  const ys = [...new Set(polygon.map(p => p.Y))].sort((a, b) => a - b);
+  let best = null;
+  for (let k = 0; k < ys.length - 1; k++) {
+    const y = (ys[k] + ys[k + 1]) / 2, hits = [];
+    polygon.forEach((p, i) => { const q = polygon[(i + 1) % polygon.length]; if ((p.Y > y) !== (q.Y > y)) hits.push(p.X + (y - p.Y) * (q.X - p.X) / (q.Y - p.Y)); });
+    hits.sort((a, b) => a - b);
+    for (let j = 0; j < hits.length - 1; j += 2) if (!best || hits[j + 1] - hits[j] > best.width) best = { X: (hits[j] + hits[j + 1]) / 2, Y: y, width: hits[j + 1] - hits[j] };
+  }
+  return best ? { X: best.X, Y: best.Y } : center;
+}
+
+export function renameSection(block, from, to) {
+  if (!/^[A-Z]{1,3}$/.test(to)) throw new Error('Use a section letter, such as A or B.');
+  const analysis = analyzePieces(block), next = structuredClone(block);
+  next.PieceSettings ||= {};
+  for (const face of analysis.faces) {
+    if (face.section !== from && face.section !== to) continue;
+    const section = face.section === from ? to : from;
+    next.PieceSettings[face.key] = { ...next.PieceSettings[face.key], Polygon: face.polygon, Color: face.color, Label: `${section}${face.label.match(/\d+$/)[0]}` };
+  }
+  return next;
+}
+export function resizeBlock(block, width, height) {
+  const sx = width / block.WidthInches, sy = height / block.HeightInches;
+  const tx = p => ({ X: Math.min(width, p.X * sx), Y: Math.min(height, p.Y * sy) });
+  const next = { ...structuredClone(block), WidthInches: width, HeightInches: height, Lines: block.Lines.map(l => ({ ...l, Start: tx(l.Start), End: tx(l.End) })) };
+  if (block.PieceSettings) {
+    next.PieceSettings = {};
+    for (const setting of Object.values(block.PieceSettings)) if (setting.Polygon) {
+      const polygon = setting.Polygon.map(tx);
+      next.PieceSettings[polygonKey(polygon)] = { ...setting, Polygon: polygon };
+    }
+  }
+  validateBlock(next);
+  return next;
 }

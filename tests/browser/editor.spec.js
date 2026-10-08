@@ -7,7 +7,7 @@ test('draw, undo, redo, save, reload, and export an actual-size PDF', async ({ p
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await expect(page.locator('#line-count')).toHaveText('5 seams');
-  await expect(page.locator('#sheet-count')).toHaveText('4 sheets · 2 × 2');
+  await expect(page.locator('#sheet-count')).toHaveText('8 sheets · 2 sections');
   await page.getByRole('button', { name: 'Add a blank block' }).click();
   await page.locator('#width').fill('4');
   await page.locator('#height').fill('4');
@@ -67,4 +67,64 @@ test('mobile layout remains usable with no horizontal overflow', async ({ page }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'Download FPP pattern' }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button', { name: 'Download FPP pattern' })).toBeVisible();
+});
+
+const importBlock = async (page, block) => page.locator('#project-file').setInputFiles({ name: 'notes.quiltstudio', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ SchemaVersion: 1, Blocks: [{ Id: 'notes', Name: 'Notes test', WidthInches: 4, HeightInches: 4, Lines: [], ...block }] })) });
+async function clickModel(page, x, y, options) {
+  await page.locator('#canvas').scrollIntoViewIfNeeded();
+  const p = await page.locator('#canvas').evaluate((svg, [x, y]) => { const p = new DOMPoint(x, y).matrixTransform(svg.getScreenCTM()); return { x: p.x, y: p.y }; }, [x, y]);
+  await page.mouse.click(p.x, p.y, options);
+}
+
+test('paint, manually relabel, export separate sections with color codes, and restore settings', async ({ page }) => {
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/'); await importBlock(page, { Lines: [{ Id: 'h', Start: { X: 0, Y: 2 }, End: { X: 4, Y: 2 } }] });
+  await page.locator('#fabric-color').fill('#ffff00');
+  await page.locator('#color-tool').click(); await clickModel(page, 2, 1);
+  await expect(page.locator('#canvas polygon[fill="#ffff00"]')).toHaveCount(1);
+  expect(await page.locator('#quilt-preview polygon[fill="#ffff00"]').count()).toBeGreaterThan(1);
+  await expect(page.locator('#color-key')).toContainText('1 · #FFFF00');
+  await page.locator('#piece-name').fill('B1'); await page.locator('#rename-piece').click();
+  await expect(page.locator('#print-section option')).toHaveCount(2);
+  await expect(page.locator('#sheet-count')).toHaveText('2 sheets · 2 sections');
+  const downloaded = page.waitForEvent('download'); await page.locator('#export-pdf').click();
+  const pdf = await PDFDocument.load(await readFile(await (await downloaded).path()));
+  expect(pdf.getPageCount()).toBe(3); // two foundations + fabric color key
+  await page.reload(); await expect(page.locator('#piece-select option')).toContainText(['B1', 'A2']);
+  await expect(page.locator('#canvas polygon[fill="#ffff00"]')).toHaveCount(1);
+  await page.locator('#piece-name').fill('C1'); await page.locator('#rename-section').click();
+  await expect(page.locator('#canvas .piece-label').filter({ hasText: 'C1' })).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('cross lines, right-click delete, undo, and confirmed clear restore whole geometry', async ({ page }) => {
+  await page.goto('/'); await importBlock(page, { Lines: [{ Id: 'v', Start: { X: 2, Y: 0 }, End: { X: 2, Y: 4 } }] });
+  await page.locator('#cross-lines').check(); await clickModel(page, 0, 2); await clickModel(page, 3, 2);
+  await expect(page.locator('#line-count')).toHaveText('4 seams');
+  await clickModel(page, 1, 2, { button: 'right' });
+  await expect(page.locator('#line-count')).toHaveText('2 seams');
+  await page.locator('#undo').click(); await expect(page.locator('#line-count')).toHaveText('4 seams');
+  page.once('dialog', d => d.dismiss()); await page.locator('#clear-drawing').click();
+  await expect(page.locator('#line-count')).toHaveText('4 seams');
+  page.once('dialog', d => d.accept()); await page.locator('#clear-drawing').click();
+  await expect(page.locator('#line-count')).toHaveText('0 seams');
+  await page.locator('#undo').click(); await expect(page.locator('#line-count')).toHaveText('4 seams');
+});
+
+test('drawing symmetry is atomic and each curve tool produces printable closed pieces', async ({ page }) => {
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/'); await importBlock(page, {});
+  await page.locator('#symmetry-horizontal').check(); await clickModel(page, 0, 1); await clickModel(page, 3, 1);
+  await expect(page.locator('#line-count')).toHaveText('2 seams');
+  await page.locator('#undo').click(); await expect(page.locator('#line-count')).toHaveText('0 seams');
+  for (const kind of ['curve', 'half', 'quarter']) {
+    await importBlock(page, {}); await page.locator('#drawing-shape').selectOption(kind);
+    await clickModel(page, 0, 0); await clickModel(page, 4, 0); await clickModel(page, 2, 1);
+    await expect(page.locator('#piece-select option')).toHaveCount(2);
+    await expect(page.locator('#export-pdf')).toBeEnabled();
+    await clickModel(page, 2, kind === 'half' ? 2 : kind === 'quarter' ? Math.sqrt(8) - 2 : 1, { button: 'right' });
+    await expect(page.locator('#line-count')).toHaveText('0 seams');
+    await page.locator('#undo').click(); await expect(page.locator('#piece-select option')).toHaveCount(2);
+  }
+  expect(errors).toEqual([]);
 });

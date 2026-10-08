@@ -26,3 +26,15 @@ main{max-width:1530px;padding:0 4%;margin:auto}.intro{display:flex;justify-conte
 .anchor-cue.vertex{fill:#d6eadc;stroke-width:2.5}
 .anchor-cue.edge{fill:#fffefb;stroke:#b47745}
 .anchor-cue.line{fill:#fffefb;stroke:#527c61}
+
+.piece-fill { pointer-events: none; }
+.symmetry-guide { stroke: #b85e9f; stroke-width: .018; stroke-dasharray: .12 .09; pointer-events: none; }
+.section-seam { stroke: #222; stroke-width: .7; }
+.section-cut { stroke: #555; stroke-width: .6; stroke-dasharray: 4 3; }
+.section-label { font-size: 10px; text-anchor: middle; fill: #222; font-weight: 600; }
+.color-key { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.color-key span { padding: 4px 6px; border: 1px solid #ddd; border-radius: 3px; font-size: 10px; }
+#fabric-color { width: 100%; height: 36px; padding: 2px; }
+#color-tool[aria-pressed="true"] { background: #d8e7da; }
+.editor-toolbar { flex-wrap: wrap; gap: 8px; }
+#canvas { touch-action: none; }
