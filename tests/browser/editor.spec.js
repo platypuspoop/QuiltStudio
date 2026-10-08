@@ -13,6 +13,7 @@ test('draw, undo, redo, save, reload, and export an actual-size PDF', async ({ p
   await page.locator('#height').fill('4');
   await page.getByRole('button', { name: 'Apply dimensions' }).click();
   await expect(page.locator('#sheet-count')).toHaveText('1 sheet · 1 × 1');
+  await page.locator('#canvas').scrollIntoViewIfNeeded();
   const positions = await page.locator('#canvas').evaluate(svg => {
     const matrix = svg.getScreenCTM();
     return [new DOMPoint(0, 1), new DOMPoint(2.5, 1)].map(p => { const q = p.matrixTransform(matrix); return { x: q.x, y: q.y }; });

@@ -816,3 +816,15 @@ export function resizeBlock(block, width, height) {
   validateBlock(next);
   return next;
 }
+
+export function previewCurve(block, start, end, bend, kind, crossLines = false) {
+  const points = sampleCurve(start, end, bend, kind);
+  if (crossLines) return points;
+  const result = [points[0]];
+  for (let i = 0; i < points.length - 1; i++) {
+    const hits = block.Lines.map(l => segmentIntersection(points[i], points[i + 1], l.Start, l.End)).filter(hit => hit && hit.t > 1e-5).sort((a, b) => a.t - b.t);
+    if (hits.length) { result.push({ X: hits[0].X, Y: hits[0].Y }); return result; }
+    result.push(points[i + 1]);
+  }
+  return result;
+}

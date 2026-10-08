@@ -1,5 +1,5 @@
 import './style.css';
-import { addConstrainedLine, addCurve, applySymmetry, deleteDraft, pointInPolygon, sampleCurve, setPieceSetting, renameSection, resizeBlock, colorLegend, planSectionPatterns, analyzePieces, demoProject, extendLineToNextHit, findAnchor, parseProject, planQuiltLayout, QUILT_PRESETS, snapDrawingPoint } from './pattern.js';
+import { addConstrainedLine, addCurve, applySymmetry, deleteDraft, pointInPolygon, previewCurve, setPieceSetting, renameSection, resizeBlock, colorLegend, planSectionPatterns, analyzePieces, demoProject, extendLineToNextHit, findAnchor, parseProject, planQuiltLayout, QUILT_PRESETS, snapDrawingPoint } from './pattern.js';
 import { createPatternPdf } from './pdf.js';
 
 const icons = {
@@ -189,7 +189,7 @@ function pieceLabelMarkup(mirror = false) {
 }
 function curvePreviewPoints() {
   if (!pending || !curveEnd || !cursor) return [];
-  try { return sampleCurve(pending, curveEnd, cursor, $('drawing-shape').value); } catch { return []; }
+  try { return previewCurve(block(), pending, curveEnd, cursor, $('drawing-shape').value, $('cross-lines').checked); } catch { return []; }
 }
 function lineMarkup(mirror = false) {
   const b = block();

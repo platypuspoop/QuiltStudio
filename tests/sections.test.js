@@ -148,3 +148,13 @@ test('resizing preserves manual labels/colors and whole-section renaming exchang
   assert.equal(analyzePieces(b).faces.find(p => p.label === 'B1').color, '#ffff00');
   assert.equal(planSectionPatterns(b).length, 2);
 });
+
+test('curve preview shows first-hit geometry before completion', async () => {
+  const { previewCurve } = await import('../web/pattern.js');
+  const b = blank(4, 4); b.Lines = [line('v', 2, 0, 2, 4)];
+  const points = previewCurve(b, { X: 0, Y: 0 }, { X: 4, Y: 0 }, { X: 2, Y: 2 }, 'half');
+  assert.ok(points.every(p => p.X <= 2 + 1e-7));
+  const n = addCurve(b, { X: 0, Y: 0 }, { X: 4, Y: 0 }, { X: 2, Y: 2 }, { kind: 'half', tolerance: .001 });
+  const tail = n.Lines.filter(l => l.Curve).at(-1).End;
+  assert.ok(Math.hypot(points.at(-1).X - tail.X, points.at(-1).Y - tail.Y) < 1e-7);
+});
