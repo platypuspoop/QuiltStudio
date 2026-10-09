@@ -168,7 +168,7 @@ test('piece seams share a section label while section boundaries split allowance
   separated.Lines = [{ Start: { X: 0, Y: 5 }, End: { X: 10, Y: 5 }, BoundaryType: 'section' }];
   const split = analyzePieces(separated);
   assert.equal(split.faces.length, 2);
-  assert.deepEqual(split.faces.map(face => face.label).sort(), ['A', 'B']);
+  assert.deepEqual(split.faces.map(face => face.label).sort(), ['A1', 'B1']);
   assert.ok(split.edges.some(edge => edge.type === 'section' && !edge.border));
 });
 

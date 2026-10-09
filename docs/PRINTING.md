@@ -14,10 +14,10 @@ The PDF exporter uses vector lines, with 72 PDF points per inch. It does not use
 
 ## Assemble tiled patterns
 
-Blocks larger than the pattern area use multiple pages. Each page has a row and column number, a calibration square, and **¼ inch of repeated geometry** at joins.
+Sections larger than the pattern area use multiple pages. Each page has a row and column number, a calibration square, and **¼ inch of repeated geometry** at joins.
 
 1. Check the calibration square on every sheet.
-2. Lay the sheets out by row and column number.
+2. Separate sheets by section letter, then lay each section out by row and column number.
 3. On a page to the right, trim the blank left margin to the pattern area's left corner marks. Place that edge onto the previous page's vertical dotted overlap guide. The previous page extends another ¼ inch beyond that guide; repeated seam lines must coincide.
 4. For a page below, trim the blank top margin to its top pattern-area corner marks. Place that edge onto the previous row's horizontal dotted overlap guide.
 5. Tape the sheets together and verify repeated seam lines align. Avoid stretching the paper.
@@ -27,10 +27,14 @@ Corner marks identify page boundaries. **Do not simply butt corner marks togethe
 
 ## What the lines mean
 
-- Solid outside rectangle: finished block boundary.
-- Solid interior lines: the seams you drew, mirrored horizontally for foundation printing.
-- Dashed outside rectangle: cutting outline, ¼ inch beyond the finished boundary.
+- Solid outside contour: finished section boundary.
+- Solid interior lines: piece seams, mirrored for foundation printing.
+- Dashed outside contour: joined cutting outline, ¼ inch beyond each section perimeter edge. Internal seams receive no offset.
 - Fine dotted lines near joins: page overlap guides, not sewing lines.
+- A1/A2 etc.: piece labels; the starting pair is 1/2, followed by attachments. Review sewing order and use manual corrections where needed.
+- Colored box below the piece name: fabric color code, ranked by the number of pieces using that color. The separate fabric-key page lists codes and hex values. Code 1 is the most frequently used color; tied counts use hex order.
 - Reference images and editor grids are excluded from printing.
 
-This version does not generate piece labels or validate sewing order. The outer allowance is around the block, not a separate offset around each interior piece.
+Every lettered section starts on its own page, tiled as necessary. Use the Foundation section selector to review each separate mirrored template. The bundled example PDFs are older whole-block scale proofs; newly generated PDFs use section perimeters.
+
+Curved seams are printable but require curved piecing. Curves are approximated by connected vector chords within 0.003 inch. Automatic labels do not constitute a validated sewing plan. Invalid/disconnected sections and unsafe offset outlines block export with a correction message.
