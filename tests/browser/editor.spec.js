@@ -7,12 +7,15 @@ test('draw, undo, redo, save, reload, and export an actual-size PDF', async ({ p
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await expect(page.locator('#line-count')).toHaveText('5 seams');
-  await expect(page.locator('#sheet-count')).toHaveText('8 sheets · 2 sections');
+  await expect(page.locator('#canvas .piece-label')).toHaveCount(0);
   await page.getByRole('button', { name: 'Add a blank block' }).click();
   await page.locator('#width').fill('4');
   await page.locator('#height').fill('4');
   await page.getByRole('button', { name: 'Apply dimensions' }).click();
-  await expect(page.locator('#sheet-count')).toHaveText('1 sheet · 1 × 1');
+  await page.locator('#step-1').click();
+  await page.locator('#grid-mode').selectOption('inches');
+  await page.locator('#grid-spacing').fill('0.25'); await page.locator('#grid-spacing').press('Tab');
+  await page.locator('#step-2').click();
   await page.locator('#canvas').scrollIntoViewIfNeeded();
   const positions = await page.locator('#canvas').evaluate(svg => {
     const matrix = svg.getScreenCTM();
@@ -37,6 +40,8 @@ test('draw, undo, redo, save, reload, and export an actual-size PDF', async ({ p
   await page.reload();
   await page.locator('#block-select').selectOption('1');
   await expect(page.locator('#line-count')).toHaveText('1 seam');
+  await page.locator('#step-4').click(); await page.locator('#label-sections').click();
+  await page.locator('#step-7').click();
   const exported = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download FPP pattern' }).click();
   const pdfDownload = await exported;
@@ -66,11 +71,17 @@ test('mobile layout remains usable with no horizontal overflow', async ({ page }
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.locator('#step-4').click(); await page.locator('#label-sections').click();
+  await page.locator('#step-7').click();
   await page.getByRole('button', { name: 'Download FPP pattern' }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button', { name: 'Download FPP pattern' })).toBeVisible();
 });
 
 const importBlock = async (page, block) => page.locator('#project-file').setInputFiles({ name: 'notes.quiltstudio', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ SchemaVersion: 1, Blocks: [{ Id: 'notes', Name: 'Notes test', WidthInches: 4, HeightInches: 4, Lines: [], ...block }] })) });
+async function modelPosition(page, x, y) {
+  await page.locator('#canvas').scrollIntoViewIfNeeded();
+  return page.locator('#canvas').evaluate((svg, [x, y]) => { const p = new DOMPoint(x, y).matrixTransform(svg.getScreenCTM()); return { x: p.x, y: p.y }; }, [x, y]);
+}
 async function clickModel(page, x, y, options) {
   await page.locator('#canvas').scrollIntoViewIfNeeded();
   const p = await page.locator('#canvas').evaluate((svg, [x, y]) => { const p = new DOMPoint(x, y).matrixTransform(svg.getScreenCTM()); return { x: p.x, y: p.y }; }, [x, y]);
@@ -80,19 +91,23 @@ async function clickModel(page, x, y, options) {
 test('paint, manually relabel, export separate sections with color codes, and restore settings', async ({ page }) => {
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.goto('/'); await importBlock(page, { Lines: [{ Id: 'h', Start: { X: 0, Y: 2 }, End: { X: 4, Y: 2 } }] });
+  await page.locator('#step-5').click();
   await page.locator('#fabric-color').fill('#ffff00');
   await page.locator('#color-tool').click(); await clickModel(page, 2, 1);
-  await expect(page.locator('#canvas polygon[fill="#ffff00"]')).toHaveCount(1);
-  expect(await page.locator('#quilt-preview polygon[fill="#ffff00"]').count()).toBeGreaterThan(1);
+  await expect(page.locator('#canvas path[fill="#ffff00"]')).toHaveCount(1);
+  expect(await page.locator('#quilt-preview path[fill="#ffff00"]').count()).toBeGreaterThan(1);
   await expect(page.locator('#color-key')).toContainText('1 · #FFFF00');
+  await page.locator('#step-4').click(); await page.locator('#label-sections').click();
   await page.locator('#piece-name').fill('B1'); await page.locator('#rename-piece').click();
   await expect(page.locator('#print-section option')).toHaveCount(2);
   await expect(page.locator('#sheet-count')).toHaveText('2 sheets · 2 sections');
+  await page.locator('#step-7').click();
   const downloaded = page.waitForEvent('download'); await page.locator('#export-pdf').click();
   const pdf = await PDFDocument.load(await readFile(await (await downloaded).path()));
   expect(pdf.getPageCount()).toBe(3); // two foundations + fabric color key
   await page.reload(); await expect(page.locator('#piece-select option')).toContainText(['B1', 'A2']);
-  await expect(page.locator('#canvas polygon[fill="#ffff00"]')).toHaveCount(1);
+  await expect(page.locator('#canvas path[fill="#ffff00"]')).toHaveCount(1);
+  await page.locator('#step-4').click();
   await page.locator('#piece-name').fill('C1'); await page.locator('#rename-section').click();
   await expect(page.locator('#canvas .piece-label').filter({ hasText: 'C1' })).toHaveCount(1);
   expect(errors).toEqual([]);
@@ -100,6 +115,7 @@ test('paint, manually relabel, export separate sections with color codes, and re
 
 test('cross lines, right-click delete, undo, and confirmed clear restore whole geometry', async ({ page }) => {
   await page.goto('/'); await importBlock(page, { Lines: [{ Id: 'v', Start: { X: 2, Y: 0 }, End: { X: 2, Y: 4 } }] });
+  await page.locator('#step-2').click();
   await page.locator('#cross-lines').check(); await clickModel(page, 0, 2); await clickModel(page, 3, 2);
   await expect(page.locator('#line-count')).toHaveText('4 seams');
   await clickModel(page, 1, 2, { button: 'right' });
@@ -115,17 +131,88 @@ test('cross lines, right-click delete, undo, and confirmed clear restore whole g
 test('drawing symmetry is atomic and each curve tool produces printable closed pieces', async ({ page }) => {
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.goto('/'); await importBlock(page, {});
-  await page.locator('#symmetry-horizontal').check(); await clickModel(page, 0, 1); await clickModel(page, 3, 1);
+  await page.locator('#step-1').click(); await page.locator('#symmetry-horizontal').check();
+  await page.locator('#snap').uncheck();
+  await page.locator('#step-2').click(); await clickModel(page, 0, 1); await clickModel(page, 3, 1);
   await expect(page.locator('#line-count')).toHaveText('2 seams');
   await page.locator('#undo').click(); await expect(page.locator('#line-count')).toHaveText('0 seams');
   for (const kind of ['curve', 'half', 'quarter']) {
-    await importBlock(page, {}); await page.locator('#drawing-shape').selectOption(kind);
+    await importBlock(page, {}); await page.locator('#step-2').click(); await page.locator('#drawing-shape').selectOption(kind);
     await clickModel(page, 0, 0); await clickModel(page, 4, 0); await clickModel(page, 2, 1);
     await expect(page.locator('#piece-select option')).toHaveCount(2);
+    await expect(page.locator('#export-pdf')).toBeDisabled();
+    await page.locator('#step-4').click(); await page.locator('#label-sections').click();
     await expect(page.locator('#export-pdf')).toBeEnabled();
+    await page.locator('#step-2').click();
     await clickModel(page, 2, kind === 'half' ? 2 : kind === 'quarter' ? Math.sqrt(8) - 2 : 1, { button: 'right' });
     await expect(page.locator('#line-count')).toHaveText('0 seams');
     await page.locator('#undo').click(); await expect(page.locator('#piece-select option')).toHaveCount(2);
   }
   expect(errors).toEqual([]);
+});
+
+test('fine grid controls, high contrast anchors, and curved preview before placing arcs', async ({ page }) => {
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/'); await importBlock(page, {});
+  await page.locator('#step-1').click();
+  await expect(page.locator('#grid-columns')).toHaveValue('100');
+  await page.locator('#grid-columns').fill('200'); await page.locator('#grid-columns').press('Tab');
+  await page.locator('#grid-rows').fill('50'); await page.locator('#grid-rows').press('Tab');
+  await page.locator('#snap').uncheck();
+  await page.locator('#step-2').click();
+  const edge = await modelPosition(page, 0, 1); await page.mouse.move(edge.x, edge.y);
+  await expect(page.locator('.anchor-cue.edge')).toHaveCSS('stroke', 'rgb(255, 106, 0)');
+  for (const kind of ['quarter', 'half']) {
+    await page.locator('#drawing-shape').selectOption(kind);
+    await clickModel(page, 1, 1);
+    const end = await modelPosition(page, 3, 1); await page.mouse.move(end.x, end.y);
+    const first = await page.locator('.arc-preview').getAttribute('points');
+    expect(first.split(' ').length).toBeGreaterThan(10);
+    await expect(page.locator('.concavity-arrow')).toHaveCount(1);
+    await page.locator('#flip-curve').click();
+    expect(await page.locator('.arc-preview').getAttribute('points')).not.toBe(first);
+    await page.keyboard.press('Escape');
+  }
+  expect(errors).toEqual([]);
+});
+
+test('center-drag circles resize visibly, label only on request, and retain colors on layout', async ({ page }) => {
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/'); await importBlock(page, {}); await page.locator('#step-2').click();
+  await page.locator('#drawing-shape').selectOption('circle');
+  const center = await modelPosition(page, 2, 2), small = await modelPosition(page, 2.5, 2), big = await modelPosition(page, 3, 2);
+  await page.mouse.move(center.x, center.y); await page.mouse.down();
+  await page.mouse.move(small.x, small.y);
+  const first = await page.locator('.arc-preview').getAttribute('points');
+  await page.mouse.move(big.x, big.y);
+  expect(await page.locator('.arc-preview').getAttribute('points')).not.toBe(first);
+  await page.mouse.up();
+  await expect(page.locator('#piece-select option')).toHaveCount(2);
+  await expect(page.locator('#canvas .piece-label')).toHaveCount(0);
+  await expect(page.locator('#export-pdf')).toBeDisabled();
+  await page.locator('#step-4').click(); await page.locator('#label-sections').click();
+  await expect(page.locator('#canvas .piece-label')).toHaveCount(2);
+  await page.locator('#step-5').click(); await page.locator('#fabric-color').fill('#ffff00'); await clickModel(page, 2, 2);
+  await expect(page.locator('#canvas path[fill="#ffff00"]')).toHaveCount(1);
+  await page.locator('#step-6').click();
+  await page.locator('#quilt-preview [data-instance="notes:0:0"]').click();
+  await page.locator('#flip-block-y').click(); await page.locator('#quarter-turn-block').click();
+  const layout = await page.evaluate(() => JSON.parse(localStorage.getItem('quiltstudio-project')).Layout);
+  expect(layout.BlockTransforms['notes:0:0']).toMatchObject({ mirrorY: true, rotation: 90 });
+  expect(layout.BlockTransforms['notes:0:1']).toBeUndefined();
+  await page.locator('#step-7').click(); await expect(page.locator('#export-pdf')).toBeEnabled();
+  const download = page.waitForEvent('download'); await page.locator('#export-pdf').click();
+  const pdf = await PDFDocument.load(await readFile(await (await download).path())); expect(pdf.getPageCount()).toBe(2);
+  expect(errors).toEqual([]);
+});
+
+test('free quarter arc starts inside a piece and adds tangent continuations', async ({ page }) => {
+  await page.goto('/'); await importBlock(page, {}); await page.locator('#step-1').click(); await page.locator('#snap').uncheck();
+  await page.locator('#step-2').click(); await page.locator('#drawing-shape').selectOption('quarter');
+  await clickModel(page, 1, 1); await clickModel(page, 3, 1); await clickModel(page, 2, 2);
+  await expect(page.locator('#piece-select option')).toHaveCount(2);
+  const lines = await page.evaluate(() => JSON.parse(localStorage.getItem('quiltstudio-project')).Blocks[0].Lines);
+  expect(lines[0].Start.Y).toBe(0); expect(lines.at(-1).End.Y).toBe(0);
+  await page.locator('#step-4').click(); await page.locator('#label-sections').click();
+  await expect(page.locator('#export-pdf')).toBeEnabled();
 });

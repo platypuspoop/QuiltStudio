@@ -1,4 +1,6 @@
 import './style.css';
+import { installWorkflow } from './workflow.js';
+import { addCircle, addFreeArc, arcBend, previewFreeArc, sampleCircle, sampleCurve, gridSpec, snapToGrid, labelSections, facePath, pointInFace, transformBlockPoint } from './pattern.js';
 import { addConstrainedLine, addCurve, applySymmetry, deleteDraft, pointInPolygon, previewCurve, setPieceSetting, renameSection, resizeBlock, colorLegend, planSectionPatterns, analyzePieces, demoProject, extendLineToNextHit, findAnchor, parseProject, planQuiltLayout, QUILT_PRESETS, snapDrawingPoint } from './pattern.js';
 import { createPatternPdf } from './pdf.js';
 
@@ -40,6 +42,9 @@ let curveEnd = null;
 let selectedPiece = null;
 let previewSection = null;
 let noticeTimer;
+let activeStep = 0;
+let arcSide = 1;
+let selectedInstance = null;
 const block = () => project.Blocks[blockIndex];
 
 $('app').innerHTML = `
@@ -141,6 +146,7 @@ $('app').innerHTML = `
   <input id="project-file" type="file" accept=".quiltstudio,.json" hidden />
   <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" hidden />
 `;
+const setStep = installWorkflow(step => { activeStep = step; chooseTool(step === 2 ? 'draw' : step === 3 ? 'select' : step === 5 ? 'color' : 'idle'); });
 
 function notify(message) {
   $('notice').textContent = message;
@@ -177,7 +183,7 @@ function faceMarkup(analysis, mirror = false, fill = true) {
   const legend = colorLegend(analysis);
   return analysis.faces.map(face => {
     const code = face.color ? legend.find(c => c.color === face.color.toLowerCase())?.code : null;
-    return `${fill ? `<polygon points="${face.polygon.map(p => `${tx(p.X)},${p.Y}`).join(' ')}" fill="${face.color || '#fffefb'}" class="piece-fill" data-piece="${escape(face.key)}"/>` : ''}<text x="${tx(face.centroid.X)}" y="${face.centroid.Y}" style="font-size:${size}px" class="piece-label">${escape(face.label)}</text>${code ? `<rect x="${tx(face.centroid.X) - size * .5}" y="${face.centroid.Y + size * .3}" width="${size}" height="${size * .75}" fill="${face.color}" stroke="#222" stroke-width=".015"/><text x="${tx(face.centroid.X)}" y="${face.centroid.Y + size * .91}" style="font-size:${size * .6}px;fill:${contrast(face.color)}" class="piece-label">${code}</text>` : ''}`;
+    return `${fill ? `<path d="${facePath(face, p => ({ X: tx(p.X), Y: p.Y }))}" fill-rule="evenodd" fill="${face.color || '#fffefb'}" class="piece-fill" data-piece="${escape(face.key)}"/>` : ''}${b.LabelsReady === false ? '' : `<text x="${tx(face.centroid.X)}" y="${face.centroid.Y}" style="font-size:${size}px" class="piece-label">${escape(face.label)}</text>${code ? `<rect x="${tx(face.centroid.X) - size * .5}" y="${face.centroid.Y + size * .3}" width="${size}" height="${size * .75}" fill="${face.color}" stroke="#222" stroke-width=".015"/><text x="${tx(face.centroid.X)}" y="${face.centroid.Y + size * .91}" style="font-size:${size * .6}px;fill:${contrast(face.color)}" class="piece-label">${code}</text>` : ''}`}`;
   }).join('');
 }
 function contrast(color) {
@@ -188,9 +194,16 @@ function pieceLabelMarkup(mirror = false) {
   return faceMarkup(analyzePieces(block()), mirror, false);
 }
 function curvePreviewPoints() {
-  if (!pending || !curveEnd || !cursor) return [];
-  try { return previewCurve(block(), pending, curveEnd, cursor, $('drawing-shape').value, $('cross-lines').checked); } catch { return []; }
+  if (!pending || !cursor) return [];
+  const kind = $('drawing-shape').value;
+  if (kind === 'circle') return sampleCircle(pending, circleRadius());
+  const end = curveEnd || cursor;
+  const bend = kind === 'curve' && curveEnd ? cursor : arcBend(pending, end, arcSide);
+  // Show the complete intended bend even when an earlier seam would stop placement.
+  try { return previewFreeArc(block(), pending, end, bend, kind, true); }
+  catch { try { return previewCurve(block(), pending, end, bend, kind, true); } catch { return []; } }
 }
+function circleRadius() { return Math.max(.01, Math.min(Math.hypot(cursor.X - pending.X, cursor.Y - pending.Y), pending.X, pending.Y, block().WidthInches - pending.X, block().HeightInches - pending.Y)); }
 function lineMarkup(mirror = false) {
   const b = block();
   return b.Lines.map((line, index) => {
@@ -202,15 +215,31 @@ function lineMarkup(mirror = false) {
 function renderCanvas() {
   const b = block();
   $('canvas').setAttribute('viewBox', `-0.55 -0.55 ${b.WidthInches + 1.1} ${b.HeightInches + 1.1}`);
-  const spacing = Number($('grid').value);
-  const displaySpacing = spacing * Math.max(1, Math.ceil(Math.max(b.WidthInches, b.HeightInches) / spacing / 160));
+  const spec = gridSpec(b);
+  const sx = spec.stepX * Math.max(1, Math.ceil(b.WidthInches / spec.stepX / 160));
+  const sy = spec.stepY * Math.max(1, Math.ceil(b.HeightInches / spec.stepY / 160));
   let guides = '';
-  for (let x = 0; x <= b.WidthInches; x += displaySpacing) guides += `<line x1="${x}" y1="0" x2="${x}" y2="${b.HeightInches}" class="grid-line"/>`;
-  for (let y = 0; y <= b.HeightInches; y += displaySpacing) guides += `<line x1="0" y1="${y}" x2="${b.WidthInches}" y2="${y}" class="grid-line"/>`;
+  if (b.ShowGrid !== false) {
+    for (let x = 0; x <= b.WidthInches; x += sx) guides += `<line x1="${x}" y1="0" x2="${x}" y2="${b.HeightInches}" class="grid-line"/>`;
+    for (let y = 0; y <= b.HeightInches; y += sy) guides += `<line x1="0" y1="${y}" x2="${b.WidthInches}" y2="${y}" class="grid-line"/>`;
+  }
   const previewEnd = pending && cursor ? extendLineToNextHit(b, pending, cursor, $('cross-lines').checked) || cursor : cursor;
-  const anchorMarkup = hoverAnchor ? `<circle cx="${hoverAnchor.point.X}" cy="${hoverAnchor.point.Y}" r="${hoverAnchor.kind === 'vertex' ? 0.16 : 0.11}" class="anchor-cue ${hoverAnchor.kind}"/>` : '';
-  $('canvas').innerHTML = `<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" fill="#fffefb"/>${b.SourceImageBase64 ? `<image href="data:image/${b.SourceImageBase64.startsWith('/9j/') ? 'jpeg' : b.SourceImageBase64.startsWith('UklGR') ? 'webp' : b.SourceImageBase64.startsWith('Qk') ? 'bmp' : 'png'};base64,${escape(b.SourceImageBase64)}" x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" opacity="${Number.isFinite(b.SourceImageOpacity) ? Math.max(0, Math.min(1, b.SourceImageOpacity)) : 0.35}"/>` : ''}${analyzePieces(b).faces.map(f => `<polygon points="${f.polygon.map(p => `${p.X},${p.Y}`).join(' ')}" fill="${f.color || (b.SourceImageBase64 ? 'transparent' : '#fffefb')}" class="piece-fill"/>`).join('')}${guides}<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" class="block-border"/>${lineMarkup()}${pieceLabelMarkup()}${anchorMarkup}${$('symmetry-vertical').checked ? `<line x1="${b.WidthInches / 2}" y1="0" x2="${b.WidthInches / 2}" y2="${b.HeightInches}" class="symmetry-guide"/>` : ''}${$('symmetry-horizontal').checked ? `<line x1="0" y1="${b.HeightInches / 2}" x2="${b.WidthInches}" y2="${b.HeightInches / 2}" class="symmetry-guide"/>` : ''}${pending ? `<circle cx="${pending.X}" cy="${pending.Y}" r="0.12" class="pending-point"/>${curveEnd ? `<polyline points="${curvePreviewPoints().map(p => `${p.X},${p.Y}`).join(' ')}" class="pending-line" fill="none"/>` : previewEnd ? `<line x1="${pending.X}" y1="${pending.Y}" x2="${previewEnd.X}" y2="${previewEnd.Y}" class="pending-line"/>` : ''}` : ''}`;
+  const anchorMarkup = hoverAnchor && tool === 'draw' ? `<circle cx="${hoverAnchor.point.X}" cy="${hoverAnchor.point.Y}" r="${hoverAnchor.kind === 'vertex' ? 0.16 : 0.11}" class="anchor-cue ${hoverAnchor.kind}"/>` : '';
+  const arcPoints = pending && $('drawing-shape').value !== 'line' ? curvePreviewPoints() : [];
+  const end = curveEnd || cursor;
+  const mid = pending && end ? { X: (pending.X + end.X) / 2, Y: (pending.Y + end.Y) / 2 } : null;
+  const bend = mid ? arcBend(pending, end, arcSide) : null;
+  let arrow = '';
+  if (arcPoints.length && ['half', 'quarter'].includes($('drawing-shape').value)) {
+    try {
+      const arc = sampleCurve(pending, end, bend, $('drawing-shape').value), at = arc[Math.floor(arc.length / 2)];
+      const d = Math.hypot(bend.X - mid.X, bend.Y - mid.Y) || 1, length = Math.min(.35, d * .45);
+      arrow = `<line x1="${at.X}" y1="${at.Y}" x2="${at.X + (mid.X - bend.X) / d * length}" y2="${at.Y + (mid.Y - bend.Y) / d * length}" class="concavity-arrow" marker-end="url(#concavity)"/>`;
+    } catch {}
+  }
+  $('canvas').innerHTML = `<defs><marker id="concavity" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#005bff"/></marker></defs><rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" fill="#fffefb"/>${b.SourceImageBase64 ? `<image href="data:image/${b.SourceImageBase64.startsWith('/9j/') ? 'jpeg' : b.SourceImageBase64.startsWith('UklGR') ? 'webp' : b.SourceImageBase64.startsWith('Qk') ? 'bmp' : 'png'};base64,${escape(b.SourceImageBase64)}" x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" opacity="${Number.isFinite(b.SourceImageOpacity) ? Math.max(0, Math.min(1, b.SourceImageOpacity)) : 0.35}"/>` : ''}${analyzePieces(b).faces.map(f => `<path d="${facePath(f)}" fill-rule="evenodd" fill="${f.color || (b.SourceImageBase64 ? 'transparent' : '#fffefb')}" class="piece-fill"/>`).join('')}${guides}<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" class="block-border"/>${lineMarkup()}${pieceLabelMarkup()}${anchorMarkup}${$('symmetry-vertical').checked ? `<line x1="${b.WidthInches / 2}" y1="0" x2="${b.WidthInches / 2}" y2="${b.HeightInches}" class="symmetry-guide"/>` : ''}${$('symmetry-horizontal').checked ? `<line x1="0" y1="${b.HeightInches / 2}" x2="${b.WidthInches}" y2="${b.HeightInches / 2}" class="symmetry-guide"/>` : ''}${pending ? `<circle cx="${pending.X}" cy="${pending.Y}" r="0.12" class="pending-point"/>${$('drawing-shape').value !== 'line' ? `<polyline points="${arcPoints.map(p => `${p.X},${p.Y}`).join(' ')}" class="pending-line arc-preview" fill="none"/>${arrow}` : previewEnd ? `<line x1="${pending.X}" y1="${pending.Y}" x2="${previewEnd.X}" y2="${previewEnd.Y}" class="pending-line"/>` : ''}` : ''}`;
   $('canvas').classList.toggle('selecting', tool === 'select');
+  $('canvas').setAttribute('aria-label', 'Quilt drafting canvas. Arcs can start anywhere. Full circles: hold at center and drag. Straight seams: start on an edge or seam.');
 }
 function renderQuiltPreview() {
   const b = block();
@@ -239,11 +268,10 @@ function renderQuiltPreview() {
   const analysis = analyzePieces(b);
   const blocks = planned.instances.map(instance => {
     const seams = b.Lines.map(line => {
-      const sx = instance.mirrorX ? b.WidthInches - line.Start.X : line.Start.X;
-      const ex = instance.mirrorX ? b.WidthInches - line.End.X : line.End.X;
-      return `<line x1="${instance.x + sx}" y1="${instance.y + line.Start.Y}" x2="${instance.x + ex}" y2="${instance.y + line.End.Y}" class="quilt-seam"/>`;
+      const s = transformBlockPoint(b, instance, line.Start), e = transformBlockPoint(b, instance, line.End);
+      return `<line x1="${s.X}" y1="${s.Y}" x2="${e.X}" y2="${e.Y}" class="quilt-seam"/>`;
     }).join('');
-    return `<g class="quilt-block ${instance.mirrorX ? 'mirrored' : ''}"><rect x="${instance.x}" y="${instance.y}" width="${b.WidthInches}" height="${b.HeightInches}" class="quilt-block-border"/>${analysis.faces.map(f => `<polygon points="${f.polygon.map(p => `${instance.x + (instance.mirrorX ? b.WidthInches - p.X : p.X)},${instance.y + p.Y}`).join(' ')}" fill="${f.color || '#fffefb'}"/>`).join('')}${seams}</g>`;
+    return `<g data-instance="${escape(instance.key)}" class="quilt-block ${instance.mirrorX ? 'mirrored' : ''}">${analysis.faces.map(f => `<path d="${facePath(f, p => transformBlockPoint(b, instance, p))}" fill-rule="evenodd" fill="${f.color || '#fffefb'}"/>`).join('')}${seams}<rect x="${instance.x}" y="${instance.y}" width="${b.WidthInches}" height="${b.HeightInches}" class="quilt-block-border ${selectedInstance === instance.key ? 'selected-block' : ''}"/></g>`;
   }).join('');
   svg.innerHTML = `<rect width="${planned.width}" height="${planned.height}" class="quilt-background"/>${blocks}`;
 }
@@ -255,21 +283,25 @@ function render() {
   $('block-name').value = b.Name;
   $('width').value = b.WidthInches;
   $('height').value = b.HeightInches;
-  $('grid').value = ['1', '0.5', '0.25', '0.125', '0.0625'].includes(String(b.GridSizeInches)) ? String(b.GridSizeInches) : '0.25';
+  $('grid-mode').value = b.GridMode || 'subdivisions';
+  $('grid-columns').value = b.GridColumns || 100; $('grid-rows').value = b.GridRows || 100;
+  $('grid-spacing').value = b.GridSizeInches || .25;
+  $('grid-spacing').closest('label').hidden = b.GridMode !== 'inches';
+  $('grid-columns').closest('.field-row').hidden = b.GridMode === 'inches';
+  $('snap').checked = b.SnapToGrid !== false; $('show-grid').checked = b.ShowGrid !== false;
   $('opacity').value = Number.isFinite(b.SourceImageOpacity) ? b.SourceImageOpacity : 0.35;
   $('cross-lines').checked = !!b.CrossLines;
   $('symmetry-horizontal').checked = !!b.SymmetryHorizontal;
   $('symmetry-vertical').checked = !!b.SymmetryVertical;
   $('drawing-shape').value = b.DrawingShape || 'line';
   $('drawing-snap-mode').value = b.DrawingSnapMode || 'intersection';
-  $('line-role').value = selected >= 0 ? (b.Lines[selected].BoundaryType || 'piece') : currentLineRole;
   $('design-mode').value = project.Layout.DesignMode || 'repeat';
   $('image-controls').hidden = !b.SourceImageBase64;
   $('canvas-size').textContent = `${b.WidthInches}″ × ${b.HeightInches}″`;
   $('print-size').textContent = `${b.WidthInches}″ × ${b.HeightInches}″`;
   renderPiecesAndPrint();
   $('line-count').textContent = `${b.Lines.length} ${b.Lines.length === 1 ? 'seam' : 'seams'}`;
-  $('editor-instruction').textContent = tool === 'color' ? 'Click a piece to apply the selected fabric color' : curveEnd ? 'Click a bend point / arc side to finish' : tool === 'select' ? 'Click a seam to select · change Line type to classify it' : pending ? 'Aim the line · it extends to the next line or boundary' : 'Click a start point, then aim toward the next line';
+  $('editor-instruction').textContent = tool === 'color' ? 'Click a piece to apply fabric color' : tool === 'idle' ? 'Choose a step above to continue' : curveEnd ? 'Preview the bend · Flip arc direction · click to confirm' : tool === 'select' ? 'Select a seam · right-click to delete a line or curve' : $('drawing-shape').value === 'circle' ? 'Hold at the circle center and drag to resize' : pending ? 'Aim toward the next boundary' : 'Choose a start point';
   $('undo').disabled = undo.length === 0;
   $('redo').disabled = redo.length === 0;
   $('delete-line').disabled = selected < 0;
@@ -279,6 +311,7 @@ function render() {
 
 function renderPiecesAndPrint() {
   const analysis = analyzePieces(block());
+  for (const id of ['rename-piece', 'rename-section']) $(id).disabled = block().LabelsReady === false;
   if (!analysis.faces.some(f => f.key === selectedPiece)) selectedPiece = analysis.faces[0]?.key || null;
   $('piece-select').innerHTML = analysis.faces.map(f => `<option value="${escape(f.key)}">${escape(f.label)}</option>`).join('');
   $('piece-select').value = selectedPiece || '';
@@ -310,8 +343,7 @@ function renderPiecesAndPrint() {
 }
 function gridPoint(raw) {
   if (!raw || !$('snap').checked) return raw;
-  const grid = Number($('grid').value);
-  return { X: Math.max(0, Math.min(block().WidthInches, Math.round(raw.X / grid) * grid)), Y: Math.max(0, Math.min(block().HeightInches, Math.round(raw.Y / grid) * grid)) };
+  return snapToGrid(block(), raw);
 }
 function nearestLine(point) {
   let nearest = -1, distance = canvasTolerance();
@@ -337,11 +369,7 @@ function canvasPoint(event) {
   const svg = $('canvas');
   const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.getScreenCTM().inverse());
   if (point.x < -0.08 || point.y < -0.08 || point.x > block().WidthInches + 0.08 || point.y > block().HeightInches + 0.08) return null;
-  const grid = Number($('grid').value);
-  const raw = {
-    X: Math.max(0, Math.min(block().WidthInches, $('snap').checked ? Math.round(point.x / grid) * grid : point.x)),
-    Y: Math.max(0, Math.min(block().HeightInches, $('snap').checked ? Math.round(point.y / grid) * grid : point.y)),
-  };
+  const raw = gridPoint({ X: Math.max(0, Math.min(block().WidthInches, point.x)), Y: Math.max(0, Math.min(block().HeightInches, point.y)) });
   return snapDrawingPoint(block(), raw, block().DrawingSnapMode || 'intersection', canvasTolerance());
 }
 function distanceToLine(point, line) {
@@ -360,7 +388,7 @@ function completeConstrainedLine(toward) {
       boundaryType: currentLineRole,
     });
     const mirrored = applySymmetry(block(), next, $('symmetry-horizontal').checked, $('symmetry-vertical').checked);
-    checkpoint(); project.Blocks[blockIndex] = mirrored;
+    checkpoint(); project.Blocks[blockIndex] = { ...mirrored, LabelsReady: false };
     pending = null; cursor = null; hoverAnchor = null; dragOrigin = null; dragging = false;
     changed();
     return true;
@@ -372,26 +400,34 @@ function completeConstrainedLine(toward) {
 
 $('canvas').addEventListener('pointerdown', event => {
   if (event.button !== 0) return;
+  if (tool === 'idle') return;
   $('canvas').focus();
 
   if (tool === 'color') {
     const raw = rawCanvasPoint(event); if (!raw) return;
-    const face = analyzePieces(block()).faces.find(f => pointInPolygon(raw, f.polygon));
+    const face = analyzePieces(block()).faces.find(f => pointInFace(raw, f));
     if (face) { checkpoint(); project.Blocks[blockIndex] = setPieceSetting(block(), face.key, { Color: $('fabric-color').value }); selectedPiece = face.key; changed(); }
     return;
   }
   if ($('drawing-shape').value !== 'line' && tool === 'draw') {
     const raw = rawCanvasPoint(event); if (!raw) return;
+    if ($('drawing-shape').value === 'circle') {
+      pending = gridPoint(raw); cursor = pending; dragging = true;
+      dragOrigin = { x: event.clientX, y: event.clientY };
+      $('canvas').setPointerCapture(event.pointerId); renderCanvas(); return;
+    }
     if (curveEnd) {
       try {
-        const next = addCurve(block(), pending, curveEnd, gridPoint(raw), { kind: $('drawing-shape').value, tolerance: canvasTolerance(), boundaryType: currentLineRole, crossLines: $('cross-lines').checked });
+        const kind = $('drawing-shape').value;
+        const bend = kind === 'curve' ? gridPoint(raw) : arcBend(pending, curveEnd, arcSide);
+        const next = addFreeArc(block(), pending, curveEnd, bend, { kind, crossLines: $('cross-lines').checked });
         const mirrored = applySymmetry(block(), next, $('symmetry-horizontal').checked, $('symmetry-vertical').checked);
         checkpoint(); project.Blocks[blockIndex] = mirrored; cancelDrawing(); changed();
       } catch (error) { notify(error.message); }
     } else {
-      const anchor = findAnchor(block(), gridPoint(raw), canvasTolerance(), 'line');
-      if (!anchor) { notify('Curve endpoints must touch a block edge or seam.'); return; }
-      if (pending) curveEnd = anchor.point; else pending = anchor.point;
+      const point = gridPoint(raw);
+      const anchor = findAnchor(block(), point, canvasTolerance(), 'line');
+      if (pending) curveEnd = anchor?.point || point; else pending = anchor?.point || point;
       cursor = raw; render();
     }
     return;
@@ -435,12 +471,21 @@ $('canvas').addEventListener('pointermove', event => {
   if (!raw) { hoverAnchor = null; if (!pending) renderCanvas(); return; }
 
   hoverAnchor = findAnchor(block(), gridPoint(raw), canvasTolerance(), 'line');
-  if (pending) cursor = curveEnd ? gridPoint(raw) : canvasPoint(event) || raw;
+  if (pending) cursor = $('drawing-shape').value !== 'line' ? gridPoint(raw) : canvasPoint(event) || raw;
   renderCanvas();
 });
 
 $('canvas').addEventListener('pointerup', event => {
   if (!dragging || !pending) return;
+  if ($('drawing-shape').value === 'circle') {
+    cursor = gridPoint(rawCanvasPoint(event)) || cursor;
+    try {
+      const next = addCircle(block(), pending, circleRadius(), { crossLines: $('cross-lines').checked });
+      const mirrored = applySymmetry(block(), next, $('symmetry-horizontal').checked, $('symmetry-vertical').checked);
+      checkpoint(); project.Blocks[blockIndex] = mirrored; cancelDrawing(); changed();
+    } catch (error) { cancelDrawing(); render(); notify(error.message); }
+    try { $('canvas').releasePointerCapture(event.pointerId); } catch {} return;
+  }
   const moved = dragOrigin ? Math.hypot(event.clientX - dragOrigin.x, event.clientY - dragOrigin.y) : 0;
   if (moved >= 4) {
     const toward = canvasPoint(event) || rawCanvasPoint(event);
@@ -480,9 +525,12 @@ $('rename-section').onclick = () => {
     checkpoint(); project.Blocks[blockIndex] = next; changed();
   } catch (error) { notify(error.message); }
 };
-$('reset-labels').onclick = () => { checkpoint(); Object.values(block().PieceSettings || {}).forEach(s => delete s.Label); changed(); };
+const generateLabels = () => { try { const next = labelSections(block()); checkpoint(); project.Blocks[blockIndex] = next; changed(); notify('Sections and sewing order labeled. You can now correct names manually.'); } catch (error) { notify(error.message); } };
+$('label-sections').onclick = generateLabels;
+$('reset-labels').onclick = generateLabels;
+$('flip-curve').onclick = () => { arcSide *= -1; renderCanvas(); };
 $('print-section').onchange = () => { previewSection = $('print-section').value; renderPiecesAndPrint(); };
-for (const [id, key] of [['drawing-shape', 'DrawingShape'], ['cross-lines', 'CrossLines'], ['symmetry-horizontal', 'SymmetryHorizontal'], ['symmetry-vertical', 'SymmetryVertical']]) $(id).onchange = () => { block()[key] = id === 'drawing-shape' ? $(id).value : $(id).checked; cancelDrawing(); changed(); };
+for (const [id, key] of [['drawing-shape', 'DrawingShape'], ['cross-lines', 'CrossLines'], ['symmetry-horizontal', 'SymmetryHorizontal'], ['symmetry-vertical', 'SymmetryVertical'], ['snap', 'SnapToGrid'], ['show-grid', 'ShowGrid']]) $(id).onchange = () => { checkpoint(); block()[key] = id === 'drawing-shape' ? $(id).value : $(id).checked; cancelDrawing(); changed(); };
 $('draw-tool').onclick = () => chooseTool('draw');
 $('select-tool').onclick = () => chooseTool('select');
 $('undo').onclick = () => { if (!undo.length) return; redo.push(structuredClone(block())); project.Blocks[blockIndex] = undo.pop(); cancelDrawing(); selected = -1; changed(); };
@@ -496,16 +544,16 @@ $('dimensions-form').onsubmit = event => {
   const next = resizeBlock(block(), width, height);
   checkpoint(); project.Blocks[blockIndex] = next; cancelDrawing(); changed(); notify('Block, seam lines, labels, and colors resized.');
 };
-$('grid').onchange = () => { checkpoint(); block().GridSizeInches = Number($('grid').value); pending = null; changed(); };
-$('drawing-snap-mode').onchange = () => { checkpoint(); block().DrawingSnapMode = $('drawing-snap-mode').value; pending = null; changed(); };
-$('line-role').onchange = () => {
-  currentLineRole = $('line-role').value;
-  if (selected >= 0) { checkpoint(); block().Lines[selected].BoundaryType = currentLineRole; changed(); }
+for (const [id, key] of [['grid-mode', 'GridMode'], ['grid-columns', 'GridColumns'], ['grid-rows', 'GridRows'], ['grid-spacing', 'GridSizeInches']]) $(id).onchange = () => {
+  const value = id === 'grid-mode' ? $(id).value : Number($(id).value);
+  try { gridSpec({ ...block(), [key]: value }); checkpoint(); block()[key] = value; cancelDrawing(); changed(); }
+  catch (error) { notify(error.message); render(); }
 };
+$('drawing-snap-mode').onchange = () => { checkpoint(); block().DrawingSnapMode = $('drawing-snap-mode').value; pending = null; changed(); };
 $('clear-drawing').onclick = () => {
   if (!block().Lines.length) { notify('There are no lines to clear.'); return; }
   if (!window.confirm('Clear every line from this block? You can use Undo immediately afterward to restore them.')) return;
-  checkpoint(); block().Lines = []; block().PieceSettings = {}; selected = -1; cancelDrawing(); changed(); notify('Drawing cleared. Use Undo to restore the previous lines.');
+  checkpoint(); block().Lines = []; block().PieceSettings = {}; block().LabelsReady = false; selected = -1; cancelDrawing(); changed(); notify('Drawing cleared. Use Undo to restore the previous lines.');
 };
 $('paper').onchange = render;
 $('block-select').onchange = () => { blockIndex = Number($('block-select').value); if (project.Layout.DesignMode === 'repeat') project.Layout.RepeatBlockId = block().Id; undo = []; redo = []; cancelDrawing(); selected = -1; persist(); render(); };
@@ -551,11 +599,32 @@ $('alternate-mirrors').onchange = () => {
   project.Layout.AlternateMirrors = $('alternate-mirrors').checked;
   changed();
 };
+$('quilt-preview').onclick = event => {
+  const instance = event.target.closest('[data-instance]'); if (!instance) return;
+  selectedInstance = instance.dataset.instance;
+  $('selected-block-info').textContent = `Selected block ${selectedInstance.split(':').slice(-2).map(n => Number(n) + 1).join(', ')}`;
+  renderQuiltPreview();
+};
+function updateInstance(change) {
+  if (!selectedInstance) { notify('Select a block in the quilt preview first.'); return; }
+  try {
+    const instance = planQuiltLayout(block(), project.Layout).instances.find(i => i.key === selectedInstance);
+    if (!instance) throw new Error('Select a block in the current layout.');
+    const current = { mirrorX: instance.mirrorX, mirrorY: instance.mirrorY, rotation: instance.rotation };
+    const next = { ...project.Layout, BlockTransforms: { ...project.Layout.BlockTransforms, [selectedInstance]: change(current) } };
+    planQuiltLayout(block(), next); project.Layout = next; changed();
+  } catch (error) { notify(error.message); }
+}
+$('flip-block-x').onclick = () => updateInstance(t => ({ ...t, mirrorX: !t.mirrorX }));
+$('flip-block-y').onclick = () => updateInstance(t => ({ ...t, mirrorY: !t.mirrorY }));
+$('rotate-block').onclick = () => updateInstance(t => ({ ...t, rotation: (t.rotation + 180) % 360 }));
+$('quarter-turn-block').onclick = () => updateInstance(t => ({ ...t, rotation: (t.rotation + 90) % 360 }));
+$('reset-block-transform').onclick = () => { if (selectedInstance) { delete project.Layout.BlockTransforms?.[selectedInstance]; changed(); } };
 $('design-mode').onchange = () => {
   const mode = $('design-mode').value;
   if (mode === 'large') {
     if (!project.Layout.LargeBlockId || !project.Blocks.some(candidate => candidate.Id === project.Layout.LargeBlockId)) {
-      const large = { Id: crypto.randomUUID(), Name: 'Whole quilt', WidthInches: project.Layout.WidthInches, HeightInches: project.Layout.HeightInches, GridSizeInches: 0.25, Lines: [], SourceImageOpacity: 0.35, DrawingSnapMode: 'intersection' };
+      const large = { Id: crypto.randomUUID(), Name: 'Whole quilt', WidthInches: project.Layout.WidthInches, HeightInches: project.Layout.HeightInches, GridMode: 'subdivisions', GridColumns: 100, GridRows: 100, LabelsReady: false, Lines: [], SourceImageOpacity: 0.35, DrawingSnapMode: 'intersection' };
       project.Blocks.push(large); project.Layout.LargeBlockId = large.Id;
     }
     if (block().Id !== project.Layout.LargeBlockId) project.Layout.RepeatBlockId = block().Id;
@@ -571,7 +640,7 @@ $('design-mode').onchange = () => {
 
 $('new-block').onclick = () => {
   if (project.Blocks.length >= 100) { notify('A project can contain at most 100 blocks.'); return; }
-  project.Blocks.push({ Id: crypto.randomUUID(), Name: `Block ${project.Blocks.length + 1}`, WidthInches: 12, HeightInches: 12, GridSizeInches: 0.25, Lines: [], SourceImageOpacity: 0.35, DrawingSnapMode: 'intersection' });
+  project.Blocks.push({ Id: crypto.randomUUID(), Name: `Block ${project.Blocks.length + 1}`, WidthInches: 12, HeightInches: 12, GridMode: 'subdivisions', GridColumns: 100, GridRows: 100, LabelsReady: false, Lines: [], SourceImageOpacity: 0.35, DrawingSnapMode: 'intersection' });
   blockIndex = project.Blocks.length - 1; project.Layout.DesignMode = 'repeat'; project.Layout.RepeatBlockId = block().Id; undo = []; redo = []; cancelDrawing(); selected = -1; changed();
 };
 function download(bytes, type, filename) {
@@ -628,5 +697,5 @@ document.addEventListener('keydown', event => {
     if (event.key.toLowerCase() === 's') { event.preventDefault(); $('save-project').click(); }
   }
 });
-render();
+setStep(0);
 if (restoreMessage) notify(restoreMessage);

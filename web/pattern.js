@@ -32,12 +32,19 @@ export function planQuiltLayout(block, layout = {}) {
 
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
+      const key = `${block.Id || 'block'}:${row}:${column}`;
+      const custom = layout.BlockTransforms?.[key] || {};
+      const rotation = custom.rotation ?? 0;
+      if (![0, 90, 180, 270].includes(rotation) || rotation % 180 && Math.abs(block.WidthInches - block.HeightInches) > EPSILON) throw new Error('Quarter-turn rotations require a square block.');
       instances.push({
+        key,
         row,
         column,
         x: offsetX + column * block.WidthInches,
         y: offsetY + row * block.HeightInches,
-        mirrorX: alternateMirrors && (row + column) % 2 === 1,
+        mirrorX: custom.mirrorX ?? (alternateMirrors && (row + column) % 2 === 1),
+        mirrorY: custom.mirrorY ?? false,
+        rotation,
       });
     }
   }
@@ -54,6 +61,8 @@ export function validateBlock(block) {
   if (!Array.isArray(block.Lines) || block.Lines.length > 5000) {
     throw new Error('A block can contain at most 5,000 seam lines.');
   }
+  gridSpec(block);
+  if (block.LabelsReady != null && typeof block.LabelsReady !== 'boolean') throw new Error('Invalid labeling state.');
   for (const line of block.Lines) {
     for (const point of [line.Start, line.End]) {
       if (!point || !Number.isFinite(point.X) || !Number.isFinite(point.Y)
@@ -67,6 +76,7 @@ export function validateBlock(block) {
     for (const setting of Object.values(block.PieceSettings)) {
       if (!setting || typeof setting !== 'object' || setting.Label && !/^[A-Z]{1,3}[1-9]\d{0,3}$/.test(setting.Label) || setting.Color && !/^#[0-9a-f]{6}$/i.test(setting.Color)) throw new Error('Invalid piece label or color.');
       if (setting.Polygon && (!Array.isArray(setting.Polygon) || setting.Polygon.length > 5000 || setting.Polygon.some(p => !p || !Number.isFinite(p.X) || !Number.isFinite(p.Y)))) throw new Error('Invalid saved piece geometry.');
+      if (setting.Holes && (!Array.isArray(setting.Holes) || setting.Holes.length > 5000 || setting.Holes.some(ring => !Array.isArray(ring) || ring.length > 5000 || ring.some(p => !p || !Number.isFinite(p.X) || !Number.isFinite(p.Y))))) throw new Error('Invalid saved piece holes.');
     }
   }
   return block;
@@ -254,7 +264,7 @@ export function addConstrainedLine(block, rawStart, toward, options = {}) {
     BoundaryType: boundaryType,
   });
 
-  return { ...block, Lines: lines };
+  return validateBlock({ ...block, Lines: lines });
 }
 
 function raySegmentHit(start, direction, line) {
@@ -279,7 +289,7 @@ export function extendLineToNextHit(block, start, toward, crossLines = false) {
     const hit = raySegmentHit(start, direction, line);
     if (hit && (!best || hit.t < best.t)) best = hit;
   }
-  return best ? { X: best.X, Y: best.Y } : null;
+  return best ? { X: Math.max(0, Math.min(block.WidthInches, best.X)), Y: Math.max(0, Math.min(block.HeightInches, best.Y)) } : null;
 }
 
 function splitGeometry(block) {
@@ -330,7 +340,7 @@ export function analyzePieces(block) {
     return la - ra;
   }));
 
-  const visited = new Set(), faces = [];
+  const visited = new Set(), faces = [], negativeRings = [];
   const directedKey = (a, b) => `${a}>${b}`;
   for (const edge of edges) {
     for (const [start, next] of [[edge.a, edge.b], [edge.b, edge.a]]) {
@@ -357,10 +367,23 @@ export function analyzePieces(block) {
         }, 0) / 2;
         if (area > 1e-5) {
           const centroid = interiorPoint(polygon, area);
-          faces.push({ polygon, area, centroid, edgeIndexes: faceEdges });
+          faces.push({ polygon, holes: [], rings: [{ polygon, edgeIndexes: faceEdges }], area, centroid, edgeIndexes: faceEdges });
+        } else if (area < -1e-5) {
+          negativeRings.push({ polygon, edgeIndexes: faceEdges, area });
         }
       }
     }
+  }
+
+  // Disconnected closed curves create an island and a hole in the containing
+  // face. Attach the reverse ring to its smallest enclosing positive face.
+  for (const ring of negativeRings) {
+    const owner = faces.filter(f => !ring.edgeIndexes.some(i => f.edgeIndexes.includes(i)) && pointInPolygon(ring.polygon[0], f.polygon))
+      .sort((a, b) => polygonArea(a.polygon) - polygonArea(b.polygon))[0];
+    if (!owner) continue;
+    owner.holes.push(ring.polygon); owner.rings.push(ring);
+    owner.area += ring.area; owner.edgeIndexes = owner.edgeIndexes.concat(ring.edgeIndexes);
+    owner.centroid = interiorPoint(owner.polygon, owner.area, owner.holes);
   }
 
   const parents = faces.map((_, i) => i);
@@ -433,14 +456,15 @@ export function analyzePieces(block) {
     const letter = alphaLabel(sectionIndex);
     ordered.forEach((i, pieceIndex) => {
       const face = faces[i];
-      face.key = polygonKey(face.polygon);
+      face.key = faceKey(face.polygon, face.holes);
       face.section = letter;
       face.label = `${letter}${pieceIndex + 1}`;
       const setting = block.PieceSettings?.[face.key];
       if (setting?.Label) { face.label = setting.Label; face.section = setting.Label.match(/^[A-Z]+/)[0]; }
       face.color = setting?.Color || null;
       if (!face.color) {
-        const inherited = Object.values(block.PieceSettings || {}).find(item => item.Color && item.Polygon && pointInPolygon(face.centroid, item.Polygon));
+        const inherited = Object.values(block.PieceSettings || {}).filter(item => item.Color && item.Polygon && pointInFace(face.centroid, { polygon: item.Polygon, holes: item.Holes }))
+          .sort((a, b) => Math.abs(polygonArea(a.Polygon)) - Math.abs(polygonArea(b.Polygon)))[0];
         face.color = inherited?.Color || null;
       }
     });
@@ -513,7 +537,7 @@ export function demoProject() {
     Name: 'First light',
     Blocks: [{
       Id: blockId, Name: 'First light', WidthInches: 12, HeightInches: 12,
-      GridSizeInches: 0.25, SourceImageOpacity: 0.35, DrawingSnapMode: 'intersection',
+      GridMode: 'subdivisions', GridColumns: 100, GridRows: 100, LabelsReady: false, GridSizeInches: 0.25, SourceImageOpacity: 0.35, DrawingSnapMode: 'intersection',
       Lines: [[0, 0, 8, 12], [0, 5, 12, 5], [8, 12, 12, 5], [0, 10, 8, 12], [4, 0, 12, 5]].map(([x1, y1, x2, y2]) => ({
         Id: crypto.randomUUID(), Start: { X: x1, Y: y1 }, End: { X: x2, Y: y2 }, BoundaryType: 'piece',
       })),
@@ -542,6 +566,8 @@ export function parseProject(text) {
   }
 
   project.Blocks.forEach(block => {
+    if (!block.GridMode) block.GridMode = block.GridSizeInches ? 'inches' : 'subdivisions';
+    if (block.LabelsReady == null) block.LabelsReady = Object.values(block.PieceSettings || {}).some(s => s.Label);
     validateBlock(block);
     if (typeof block.Name !== 'string' || block.Name.length > 200) throw new Error('Block names must be text with at most 200 characters.');
     if (!['intersection', 'line'].includes(block.DrawingSnapMode)) block.DrawingSnapMode = 'intersection';
@@ -581,9 +607,9 @@ export function setPieceSetting(block, key, update) {
   next.PieceSettings ||= {};
   if (update.Label) {
     const occupied = analysis.faces.find(f => f.key !== key && f.label === update.Label);
-    if (occupied) next.PieceSettings[occupied.key] = { ...next.PieceSettings[occupied.key], Label: face.label, Polygon: occupied.polygon, Color: occupied.color };
+    if (occupied) next.PieceSettings[occupied.key] = { ...next.PieceSettings[occupied.key], Label: face.label, Polygon: occupied.polygon, Holes: occupied.holes, Color: occupied.color };
   }
-  next.PieceSettings[key] = { ...next.PieceSettings[key], Polygon: face.polygon, ...update };
+  next.PieceSettings[key] = { ...next.PieceSettings[key], Polygon: face.polygon, Holes: face.holes, ...update };
   return next;
 }
 export function colorLegend(analysis) {
@@ -598,11 +624,11 @@ export function sectionLoops(analysis, section) {
   const boundary = [];
   section.faceIndexes.forEach(i => {
     const face = analysis.faces[i];
-    face.polygon.forEach((a, j) => {
-      const edge = analysis.edges[face.edgeIndexes[j]];
+    (face.rings || [{ polygon: face.polygon, edgeIndexes: face.edgeIndexes }]).forEach(ring => ring.polygon.forEach((a, j) => {
+      const edge = analysis.edges[ring.edgeIndexes[j]];
       if (edge.faceIndexes.filter(k => selected.has(k)).length !== 1) return;
-      boundary.push({ a, b: face.polygon[(j + 1) % face.polygon.length] });
-    });
+      boundary.push({ a, b: ring.polygon[(j + 1) % ring.polygon.length] });
+    }));
   });
   const loops = [];
   while (boundary.length) {
@@ -641,6 +667,7 @@ export function offsetPolygon(polygon, distance = SEAM_ALLOWANCE) {
   return result;
 }
 export function planSectionPatterns(block, paperKey = 'letter') {
+  if (block.LabelsReady === false) throw new Error('Finish drawing, then use Label & number sections before printing.');
   const analysis = analyzePieces(block), legend = colorLegend(analysis);
   if (Math.abs(analysis.faces.reduce((sum, f) => sum + f.area, 0) - block.WidthInches * block.HeightInches) > 1e-4) throw new Error('Close the pieces before printing.');
   for (const edge of analysis.edges.filter(e => !e.border)) if (edge.faceIndexes.length !== 2 || edge.faceIndexes[0] === edge.faceIndexes[1]) throw new Error('Remove floating seam fragments before printing.');
@@ -755,7 +782,7 @@ export function applySymmetry(before, after, horizontal = false, vertical = fals
     const source = lines.find(l => projectPointToSegment(a, l).distance < 1e-5 && projectPointToSegment(b, l).distance < 1e-5);
     planar.push({ ...source, Id: crypto.randomUUID(), Start: a, End: b });
   }
-  return { ...after, Lines: planar };
+  return validateBlock({ ...after, Lines: planar });
 }
 export function deleteDraft(block, index) {
   const selected = block.Lines[index];
@@ -772,19 +799,20 @@ export function deleteDraft(block, index) {
       changed = true; return false;
     });
   }
-  return { ...block, Lines: lines };
+  return { ...block, LabelsReady: false, Lines: lines };
 }
 
-function interiorPoint(polygon, area) {
+function interiorPoint(polygon, area, holes = []) {
   let x = 0, y = 0;
   polygon.forEach((p, i) => { const q = polygon[(i + 1) % polygon.length], cross = p.X * q.Y - q.X * p.Y; x += (p.X + q.X) * cross; y += (p.Y + q.Y) * cross; });
   const center = { X: x / (6 * area), Y: y / (6 * area) };
-  if (pointInPolygon(center, polygon)) return center;
-  const ys = [...new Set(polygon.map(p => p.Y))].sort((a, b) => a - b);
+  if (pointInFace(center, { polygon, holes })) return center;
+  const rings = [polygon, ...holes];
+  const ys = [...new Set(rings.flat().map(p => p.Y))].sort((a, b) => a - b);
   let best = null;
   for (let k = 0; k < ys.length - 1; k++) {
     const y = (ys[k] + ys[k + 1]) / 2, hits = [];
-    polygon.forEach((p, i) => { const q = polygon[(i + 1) % polygon.length]; if ((p.Y > y) !== (q.Y > y)) hits.push(p.X + (y - p.Y) * (q.X - p.X) / (q.Y - p.Y)); });
+    rings.forEach(ring => ring.forEach((p, i) => { const q = ring[(i + 1) % ring.length]; if ((p.Y > y) !== (q.Y > y)) hits.push(p.X + (y - p.Y) * (q.X - p.X) / (q.Y - p.Y)); }));
     hits.sort((a, b) => a - b);
     for (let j = 0; j < hits.length - 1; j += 2) if (!best || hits[j + 1] - hits[j] > best.width) best = { X: (hits[j] + hits[j + 1]) / 2, Y: y, width: hits[j + 1] - hits[j] };
   }
@@ -798,7 +826,7 @@ export function renameSection(block, from, to) {
   for (const face of analysis.faces) {
     if (face.section !== from && face.section !== to) continue;
     const section = face.section === from ? to : from;
-    next.PieceSettings[face.key] = { ...next.PieceSettings[face.key], Polygon: face.polygon, Color: face.color, Label: `${section}${face.label.match(/\d+$/)[0]}` };
+    next.PieceSettings[face.key] = { ...next.PieceSettings[face.key], Polygon: face.polygon, Holes: face.holes, Color: face.color, Label: `${section}${face.label.match(/\d+$/)[0]}` };
   }
   return next;
 }
@@ -810,7 +838,8 @@ export function resizeBlock(block, width, height) {
     next.PieceSettings = {};
     for (const setting of Object.values(block.PieceSettings)) if (setting.Polygon) {
       const polygon = setting.Polygon.map(tx);
-      next.PieceSettings[polygonKey(polygon)] = { ...setting, Polygon: polygon };
+      const holes = (setting.Holes || []).map(ring => ring.map(tx));
+      next.PieceSettings[faceKey(polygon, holes)] = { ...setting, Polygon: polygon, Holes: holes };
     }
   }
   validateBlock(next);
@@ -827,4 +856,108 @@ export function previewCurve(block, start, end, bend, kind, crossLines = false) 
     result.push(points[i + 1]);
   }
   return result;
+}
+
+export const polygonArea = polygon => polygon.reduce((sum, p, i) => {
+  const q = polygon[(i + 1) % polygon.length]; return sum + p.X * q.Y - q.X * p.Y;
+}, 0) / 2;
+export const faceKey = (polygon, holes = []) => polygonKey(polygon) + (holes.length ? `|holes:${holes.map(polygonKey).sort().join('|')}` : '');
+export const pointInFace = (point, face) => pointInPolygon(point, face.polygon) && !(face.holes || []).some(ring => pointInPolygon(point, ring));
+export function facePath(face, transform = p => p) {
+  return [face.polygon, ...(face.holes || [])].map(ring => ring.map((p, i) => { const q = transform(p); return `${i ? 'L' : 'M'} ${q.X} ${q.Y}`; }).join(' ') + ' Z').join(' ');
+}
+export function gridSpec(block) {
+  if (block.GridMode === 'inches') {
+    const step = block.GridSizeInches ?? .25;
+    if (!Number.isFinite(step) || step < .001 || step > 240) throw new Error('Grid spacing must be between 0.001 and 240 inches.');
+    return { stepX: step, stepY: step };
+  }
+  const columns = block.GridColumns ?? 100, rows = block.GridRows ?? 100;
+  if (![columns, rows].every(n => Number.isInteger(n) && n >= 2 && n <= 1000)) throw new Error('Choose 2–1,000 grid divisions per axis.');
+  return { stepX: block.WidthInches / columns, stepY: block.HeightInches / rows };
+}
+export function snapToGrid(block, point) {
+  const { stepX, stepY } = gridSpec(block);
+  return { X: Math.max(0, Math.min(block.WidthInches, Math.round(point.X / stepX) * stepX)), Y: Math.max(0, Math.min(block.HeightInches, Math.round(point.Y / stepY) * stepY)) };
+}
+export function labelSections(block) {
+  const next = structuredClone(block);
+  for (const setting of Object.values(next.PieceSettings || {})) delete setting.Label;
+  const analysis = analyzePieces(next);
+  next.PieceSettings = Object.fromEntries(analysis.faces.map(face => [face.key, { Label: face.label, Color: face.color, Polygon: face.polygon, Holes: face.holes }]));
+  next.LabelsReady = true;
+  return next;
+}
+export function transformBlockPoint(block, instance, point) {
+  let x = instance.mirrorX ? block.WidthInches - point.X : point.X;
+  let y = instance.mirrorY ? block.HeightInches - point.Y : point.Y;
+  const rotation = instance.rotation || 0;
+  if (rotation === 90) [x, y] = [block.HeightInches - y, x];
+  if (rotation === 180) [x, y] = [block.WidthInches - x, block.HeightInches - y];
+  if (rotation === 270) [x, y] = [y, block.WidthInches - x];
+  return { X: instance.x + x, Y: instance.y + y };
+}
+export function arcBend(start, end, side = 1) {
+  const dx = end.X - start.X, dy = end.Y - start.Y;
+  return { X: (start.X + end.X) / 2 - dy / 2 * side, Y: (start.Y + end.Y) / 2 + dx / 2 * side };
+}
+export function sampleCircle(center, radius) {
+  if (!Number.isFinite(radius) || radius < .01 || radius > 120) throw new Error('Choose a circle radius between 0.01 and 120 inches.');
+  const n = Math.max(24, Math.ceil(Math.PI / Math.acos(1 - Math.min(.003, radius / 4) / radius)));
+  const points = Array.from({ length: n }, (_, i) => ({ X: center.X + radius * Math.cos(2 * Math.PI * i / n), Y: center.Y + radius * Math.sin(2 * Math.PI * i / n) }));
+  return [...points, { ...points[0] }];
+}
+function clampPath(block, points) {
+  if (points.some(p => p.X < -EPSILON || p.Y < -EPSILON || p.X > block.WidthInches + EPSILON || p.Y > block.HeightInches + EPSILON)) throw new Error('Keep the curved shape inside the block; flip its direction or reduce its size.');
+  return points.map(p => ({ X: Math.max(0, Math.min(block.WidthInches, p.X)), Y: Math.max(0, Math.min(block.HeightInches, p.Y)) }));
+}
+export function previewFreeArc(block, start, end, bend, kind, crossLines = false) {
+  let points = clampPath(block, sampleCurve(start, end, bend, kind));
+  // Tangent continuations anchor a free interior arc without altering its bend.
+  const extend = (p, neighbor) => {
+    if (findAnchor(block, p, 1e-5, 'line')) return null;
+    return extendLineToNextHit(block, p, { X: p.X * 2 - neighbor.X, Y: p.Y * 2 - neighbor.Y });
+  };
+  const first = extend(points[0], points[1]), last = extend(points.at(-1), points.at(-2));
+  if (first) points.unshift(first);
+  if (last) points.push(last);
+  if (crossLines) return points;
+  const result = [points[0]];
+  for (let i = 0; i < points.length - 1; i++) {
+    const hits = block.Lines.map(l => segmentIntersection(points[i], points[i + 1], l.Start, l.End)).filter(h => h && h.t > 1e-5).sort((a, b) => a.t - b.t);
+    if (hits.length) { result.push({ X: hits[0].X, Y: hits[0].Y }); return result; }
+    result.push(points[i + 1]);
+  }
+  return result;
+}
+function addPath(block, points, kind, options = {}) {
+  points = clampPath(block, points);
+  const draft = crypto.randomUUID(), order = Math.max(-1, ...block.Lines.map((l, i) => l.Order ?? i)) + 1;
+  let lines = block.Lines.map((l, i) => ({ ...l, DraftId: l.DraftId || l.Id || `legacy-${i}`, Order: l.Order ?? i }));
+  const additions = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    if (samePoint(a, b)) continue;
+    for (const l of [...lines, ...boundarySegments(block)]) if (collinearOverlap(a, b, l.Start, l.End)) throw new Error('The new shape overlaps an existing seam or border.');
+    const cuts = [{ ...a, t: 0 }, { ...b, t: 1 }];
+    for (const l of lines) {
+      const hit = segmentIntersection(a, b, l.Start, l.End);
+      if (hit && !cuts.some(p => samePoint(p, hit))) cuts.push(hit);
+    }
+    cuts.sort((a, b) => a.t - b.t);
+    for (const p of cuts) lines = splitExistingLinesAtPoint(lines, p);
+    for (let j = 0; j < cuts.length - 1; j++) additions.push({ Id: crypto.randomUUID(), DraftId: draft, Order: order, Curve: kind, Start: { X: cuts[j].X, Y: cuts[j].Y }, End: { X: cuts[j + 1].X, Y: cuts[j + 1].Y }, BoundaryType: 'piece' });
+  }
+  const next = validateBlock({ ...block, LabelsReady: false, Lines: [...lines, ...additions] });
+  const before = analyzePieces(block), after = analyzePieces(next);
+  if (after.faces.length <= before.faces.length || Math.abs(after.faces.reduce((sum, f) => sum + f.area, 0) - block.WidthInches * block.HeightInches) > 1e-4) throw new Error('The new shape must divide a closed piece.');
+  return next;
+}
+export function addFreeArc(block, start, end, bend, options = {}) {
+  return addPath(block, previewFreeArc(block, start, end, bend, options.kind || 'half', options.crossLines), options.kind || 'half');
+}
+export function addCircle(block, center, radius, options = {}) {
+  const points = clampPath(block, sampleCircle(center, radius));
+  if (!options.crossLines && points.some((p, i) => i < points.length - 1 && block.Lines.some(l => segmentIntersection(p, points[i + 1], l.Start, l.End)))) throw new Error('This circle crosses a seam. Enable Continue through lines or use a smaller circle.');
+  return addPath(block, points, 'circle');
 }
