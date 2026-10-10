@@ -3,7 +3,6 @@ import { installWorkflow } from './workflow.js';
 import { addDraftLine, seamCount, deleteSegment, clippedBlockLines } from './pattern.js';
 import { addCircle, addFreeArc, arcBend, previewFreeArc, sampleCircle, sampleCurve, gridSpec, snapToGrid, labelSections, facePath, pointInFace, transformBlockPoint } from './pattern.js';
 import { addConstrainedLine, addCurve, applySymmetry, deleteDraft, pointInPolygon, previewCurve, setPieceSetting, renameSection, resizeBlock, colorLegend, planSectionPatterns, analyzePieces, demoProject, extendLineToNextHit, findAnchor, parseProject, planQuiltLayout, QUILT_PRESETS, snapDrawingPoint } from './pattern.js';
-import { createPatternPdf } from './pdf.js';
 
 const icons = {
   draw: '<path d="m5 19 3.5-1 10-10-2.5-2.5-10 10L5 19Z"/><path d="m14.5 7.5 2.5 2.5"/>',
@@ -558,8 +557,10 @@ $('dimensions-form').onsubmit = event => {
   event.preventDefault();
   const width = Number($('width').value), height = Number($('height').value);
   if (![width, height].every(value => Number.isFinite(value) && value >= 1 && value <= 240)) { notify('Choose dimensions between 1 and 240 inches.'); return; }
-  const next = resizeBlock(block(), width, height);
-  checkpoint(); project.Blocks[blockIndex] = next; cancelDrawing(); changed(); notify('Block, seam lines, labels, and colors resized.');
+  try {
+    const next = resizeBlock(block(), width, height);
+    checkpoint(); project.Blocks[blockIndex] = next; cancelDrawing(); changed(); notify('Block, seam lines, labels, and colors resized.');
+  } catch (error) { notify(error.message); render(); }
 };
 for (const [id, key] of [['grid-mode', 'GridMode'], ['grid-columns', 'GridColumns'], ['grid-rows', 'GridRows'], ['grid-spacing', 'GridSizeInches']]) $(id).onchange = () => {
   const value = id === 'grid-mode' ? $(id).value : Number($(id).value);
@@ -710,6 +711,7 @@ $('remove-image').onclick = () => { checkpoint(); delete block().SourceImageBase
 $('export-pdf').onclick = async () => {
   const button = $('export-pdf'); button.disabled = true;
   try {
+    const { createPatternPdf } = await import('./pdf.js');
     const bytes = await createPatternPdf(block(), $('paper').value);
     download(bytes, 'application/pdf', `${filename(block().Name)}-FPP-${$('paper').value}.pdf`);
     notify('PDF downloaded. Print at Actual size / 100% and measure the 1-inch square.');
