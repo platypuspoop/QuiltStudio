@@ -1,8 +1,8 @@
 import './style.css';
 import { installWorkflow } from './workflow.js';
+import { addDraftLine, seamCount, deleteSegment, clippedBlockLines } from './pattern.js';
 import { addCircle, addFreeArc, arcBend, previewFreeArc, sampleCircle, sampleCurve, gridSpec, snapToGrid, labelSections, facePath, pointInFace, transformBlockPoint } from './pattern.js';
 import { addConstrainedLine, addCurve, applySymmetry, deleteDraft, pointInPolygon, previewCurve, setPieceSetting, renameSection, resizeBlock, colorLegend, planSectionPatterns, analyzePieces, demoProject, extendLineToNextHit, findAnchor, parseProject, planQuiltLayout, QUILT_PRESETS, snapDrawingPoint } from './pattern.js';
-import { createPatternPdf } from './pdf.js';
 
 const icons = {
   draw: '<path d="m5 19 3.5-1 10-10-2.5-2.5-10 10L5 19Z"/><path d="m14.5 7.5 2.5 2.5"/>',
@@ -200,31 +200,44 @@ function curvePreviewPoints() {
   const end = curveEnd || cursor;
   const bend = kind === 'curve' && curveEnd ? cursor : arcBend(pending, end, arcSide);
   // Show the complete intended bend even when an earlier seam would stop placement.
-  try { return previewFreeArc(block(), pending, end, bend, kind, true); }
+  try { return previewFreeArc(draftBlock(), pending, end, bend, kind, true); }
   catch { try { return previewCurve(block(), pending, end, bend, kind, true); } catch { return []; } }
 }
-function circleRadius() { return Math.max(.01, Math.min(Math.hypot(cursor.X - pending.X, cursor.Y - pending.Y), pending.X, pending.Y, block().WidthInches - pending.X, block().HeightInches - pending.Y)); }
+function circleRadius() { return Math.max(.01, Math.min(120, Math.hypot(cursor.X - pending.X, cursor.Y - pending.Y))); }
+function draftBlock() { return { ...block(), AllowOutside: true }; }
+function screenSize(pixels) { const m = $('canvas').getScreenCTM(); return pixels / Math.max(.001, Math.hypot(m.a, m.b)); }
+function commitCurve() {
+  if (!pending || !curveEnd) return;
+  try {
+    const kind = $('drawing-shape').value, bend = kind === 'curve' ? cursor : arcBend(pending, curveEnd, arcSide);
+    const next = addFreeArc(draftBlock(), pending, curveEnd, bend, { kind, crossLines: true });
+    const mirrored = applySymmetry(block(), next, $('symmetry-horizontal').checked, $('symmetry-vertical').checked);
+    checkpoint(); project.Blocks[blockIndex] = mirrored; cancelDrawing(); changed();
+  } catch (error) { notify(error.message); }
+}
 function lineMarkup(mirror = false) {
   const b = block();
   return b.Lines.map((line, index) => {
     const x1 = mirror ? b.WidthInches - line.Start.X : line.Start.X;
     const x2 = mirror ? b.WidthInches - line.End.X : line.End.X;
-    return `<line x1="${x1}" y1="${line.Start.Y}" x2="${x2}" y2="${line.End.Y}" class="seam ${!mirror && selected === index ? 'selected' : ''}"/>${mirror ? '' : `<circle cx="${x1}" cy="${line.Start.Y}" r="0.065" class="endpoint"/><circle cx="${x2}" cy="${line.End.Y}" r="0.065" class="endpoint"/>`}`;
+    return `<line x1="${x1}" y1="${line.Start.Y}" x2="${x2}" y2="${line.End.Y}" class="seam ${!mirror && selected === index ? 'selected' : ''}"/>${mirror ? '' : `<circle cx="${x1}" cy="${line.Start.Y}" r="${screenSize(1.5)}" class="endpoint"/>`}`;
   }).join('');
 }
 function renderCanvas() {
   const b = block();
-  $('canvas').setAttribute('viewBox', `-0.55 -0.55 ${b.WidthInches + 1.1} ${b.HeightInches + 1.1}`);
+  const padding = b.DraftPadding ?? 2;
+  $('canvas').setAttribute('viewBox', `${-padding} ${-padding} ${b.WidthInches + padding * 2} ${b.HeightInches + padding * 2}`);
   const spec = gridSpec(b);
   const sx = spec.stepX * Math.max(1, Math.ceil(b.WidthInches / spec.stepX / 160));
   const sy = spec.stepY * Math.max(1, Math.ceil(b.HeightInches / spec.stepY / 160));
   let guides = '';
   if (b.ShowGrid !== false) {
-    for (let x = 0; x <= b.WidthInches; x += sx) guides += `<line x1="${x}" y1="0" x2="${x}" y2="${b.HeightInches}" class="grid-line"/>`;
-    for (let y = 0; y <= b.HeightInches; y += sy) guides += `<line x1="0" y1="${y}" x2="${b.WidthInches}" y2="${y}" class="grid-line"/>`;
+    for (let x = Math.ceil(-padding / sx) * sx; x <= b.WidthInches + padding; x += sx) guides += `<line x1="${x}" y1="${-padding}" x2="${x}" y2="${b.HeightInches + padding}" class="grid-line"/>`;
+    for (let y = Math.ceil(-padding / sy) * sy; y <= b.HeightInches + padding; y += sy) guides += `<line x1="${-padding}" y1="${y}" x2="${b.WidthInches + padding}" y2="${y}" class="grid-line"/>`;
   }
-  const previewEnd = pending && cursor ? extendLineToNextHit(b, pending, cursor, $('cross-lines').checked) || cursor : cursor;
-  const anchorMarkup = hoverAnchor && tool === 'draw' ? `<circle cx="${hoverAnchor.point.X}" cy="${hoverAnchor.point.Y}" r="${hoverAnchor.kind === 'vertex' ? 0.16 : 0.11}" class="anchor-cue ${hoverAnchor.kind}"/>` : '';
+  const outsidePoint = p => p && (p.X < 0 || p.Y < 0 || p.X > b.WidthInches || p.Y > b.HeightInches);
+  const previewEnd = pending && cursor && !outsidePoint(pending) && !outsidePoint(cursor) ? extendLineToNextHit(b, pending, cursor, $('cross-lines').checked) || cursor : cursor;
+  const anchorMarkup = hoverAnchor && tool === 'draw' ? `<circle cx="${hoverAnchor.point.X}" cy="${hoverAnchor.point.Y}" r="${screenSize(4)}" class="anchor-cue ${hoverAnchor.kind}"/><path d="M${hoverAnchor.point.X - screenSize(6)} ${hoverAnchor.point.Y}h${screenSize(12)} M${hoverAnchor.point.X} ${hoverAnchor.point.Y - screenSize(6)}v${screenSize(12)}" class="anchor-crosshair"/>` : '';
   const arcPoints = pending && $('drawing-shape').value !== 'line' ? curvePreviewPoints() : [];
   const end = curveEnd || cursor;
   const mid = pending && end ? { X: (pending.X + end.X) / 2, Y: (pending.Y + end.Y) / 2 } : null;
@@ -237,8 +250,10 @@ function renderCanvas() {
       arrow = `<line x1="${at.X}" y1="${at.Y}" x2="${at.X + (mid.X - bend.X) / d * length}" y2="${at.Y + (mid.Y - bend.Y) / d * length}" class="concavity-arrow" marker-end="url(#concavity)"/>`;
     } catch {}
   }
-  $('canvas').innerHTML = `<defs><marker id="concavity" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#005bff"/></marker></defs><rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" fill="#fffefb"/>${b.SourceImageBase64 ? `<image href="data:image/${b.SourceImageBase64.startsWith('/9j/') ? 'jpeg' : b.SourceImageBase64.startsWith('UklGR') ? 'webp' : b.SourceImageBase64.startsWith('Qk') ? 'bmp' : 'png'};base64,${escape(b.SourceImageBase64)}" x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" opacity="${Number.isFinite(b.SourceImageOpacity) ? Math.max(0, Math.min(1, b.SourceImageOpacity)) : 0.35}"/>` : ''}${analyzePieces(b).faces.map(f => `<path d="${facePath(f)}" fill-rule="evenodd" fill="${f.color || (b.SourceImageBase64 ? 'transparent' : '#fffefb')}" class="piece-fill"/>`).join('')}${guides}<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" class="block-border"/>${lineMarkup()}${pieceLabelMarkup()}${anchorMarkup}${$('symmetry-vertical').checked ? `<line x1="${b.WidthInches / 2}" y1="0" x2="${b.WidthInches / 2}" y2="${b.HeightInches}" class="symmetry-guide"/>` : ''}${$('symmetry-horizontal').checked ? `<line x1="0" y1="${b.HeightInches / 2}" x2="${b.WidthInches}" y2="${b.HeightInches / 2}" class="symmetry-guide"/>` : ''}${pending ? `<circle cx="${pending.X}" cy="${pending.Y}" r="0.12" class="pending-point"/>${$('drawing-shape').value !== 'line' ? `<polyline points="${arcPoints.map(p => `${p.X},${p.Y}`).join(' ')}" class="pending-line arc-preview" fill="none"/>${arrow}` : previewEnd ? `<line x1="${pending.X}" y1="${pending.Y}" x2="${previewEnd.X}" y2="${previewEnd.Y}" class="pending-line"/>` : ''}` : ''}`;
+  $('canvas').innerHTML = `<defs><marker id="concavity" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#005bff"/></marker></defs><rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" fill="#fffefb"/>${b.SourceImageBase64 ? `<image href="data:image/${b.SourceImageBase64.startsWith('/9j/') ? 'jpeg' : b.SourceImageBase64.startsWith('UklGR') ? 'webp' : b.SourceImageBase64.startsWith('Qk') ? 'bmp' : 'png'};base64,${escape(b.SourceImageBase64)}" x="${b.SourceImageOffsetX || 0}" y="${b.SourceImageOffsetY || 0}" width="${b.WidthInches}" height="${b.HeightInches}" opacity="${Number.isFinite(b.SourceImageOpacity) ? Math.max(0, Math.min(1, b.SourceImageOpacity)) : 0.35}"/>` : ''}${analyzePieces(b).faces.map(f => `<path d="${facePath(f)}" fill-rule="evenodd" fill="${f.color || (b.SourceImageBase64 ? 'transparent' : '#fffefb')}" class="piece-fill"/>`).join('')}${guides}<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" class="block-border"/>${lineMarkup()}${pieceLabelMarkup()}${anchorMarkup}${$('symmetry-vertical').checked ? `<line x1="${b.WidthInches / 2}" y1="0" x2="${b.WidthInches / 2}" y2="${b.HeightInches}" class="symmetry-guide"/>` : ''}${$('symmetry-horizontal').checked ? `<line x1="0" y1="${b.HeightInches / 2}" x2="${b.WidthInches}" y2="${b.HeightInches / 2}" class="symmetry-guide"/>` : ''}${pending ? `<circle cx="${pending.X}" cy="${pending.Y}" r="${screenSize(3)}" class="pending-point"/>${$('drawing-shape').value !== 'line' ? `<polyline points="${arcPoints.map(p => `${p.X},${p.Y}`).join(' ')}" class="pending-line arc-preview" fill="none"/>${arrow}` : previewEnd ? `<line x1="${pending.X}" y1="${pending.Y}" x2="${previewEnd.X}" y2="${previewEnd.Y}" class="pending-line"/>` : ''}` : ''}`;
   $('canvas').classList.toggle('selecting', tool === 'select');
+  if (b.SourceImageCenterGuide) $('canvas').insertAdjacentHTML('beforeend', `<path d="M0 ${b.HeightInches / 2}H${b.WidthInches} M${b.WidthInches / 2} 0V${b.HeightInches}" class="image-center-cross"/>`);
+  $('place-curve').disabled = !pending || !cursor || $('drawing-shape').value === 'line' || $('drawing-shape').value === 'circle';
   $('canvas').setAttribute('aria-label', 'Quilt drafting canvas. Arcs can start anywhere. Full circles: hold at center and drag. Straight seams: start on an edge or seam.');
 }
 function renderQuiltPreview() {
@@ -264,16 +279,18 @@ function renderQuiltPreview() {
   $('quilt-size-label').textContent = `${planned.width}″ × ${planned.height}″`;
 
   const svg = $('quilt-preview');
-  svg.setAttribute('viewBox', `0 0 ${planned.width} ${planned.height}`);
+  svg.setAttribute('viewBox', `${-planned.border} ${-planned.border} ${planned.totalWidth} ${planned.totalHeight}`);
   const analysis = analyzePieces(b);
   const blocks = planned.instances.map(instance => {
-    const seams = b.Lines.map(line => {
+    const seams = clippedBlockLines(b).map(line => {
       const s = transformBlockPoint(b, instance, line.Start), e = transformBlockPoint(b, instance, line.End);
       return `<line x1="${s.X}" y1="${s.Y}" x2="${e.X}" y2="${e.Y}" class="quilt-seam"/>`;
     }).join('');
     return `<g data-instance="${escape(instance.key)}" class="quilt-block ${instance.mirrorX ? 'mirrored' : ''}">${analysis.faces.map(f => `<path d="${facePath(f, p => transformBlockPoint(b, instance, p))}" fill-rule="evenodd" fill="${f.color || '#fffefb'}"/>`).join('')}${seams}<rect x="${instance.x}" y="${instance.y}" width="${b.WidthInches}" height="${b.HeightInches}" class="quilt-block-border ${selectedInstance === instance.key ? 'selected-block' : ''}"/></g>`;
   }).join('');
-  svg.innerHTML = `<rect width="${planned.width}" height="${planned.height}" class="quilt-background"/>${blocks}`;
+  svg.innerHTML = `<rect x="${-planned.border}" y="${-planned.border}" width="${planned.totalWidth}" height="${planned.totalHeight}" fill="${planned.borderColor}" class="quilt-border"/><rect width="${planned.width}" height="${planned.height}" class="quilt-background"/>${blocks}`;
+  $('quilt-border-width').value = planned.border; $('quilt-border-color').value = planned.borderColor;
+  $('quilt-total-size').textContent = `Quilt field ${planned.width}″ × ${planned.height}″ · with border ${planned.totalWidth}″ × ${planned.totalHeight}″`;
 }
 
 function render() {
@@ -290,6 +307,9 @@ function render() {
   $('grid-columns').closest('.field-row').hidden = b.GridMode === 'inches';
   $('snap').checked = b.SnapToGrid !== false; $('show-grid').checked = b.ShowGrid !== false;
   $('opacity').value = Number.isFinite(b.SourceImageOpacity) ? b.SourceImageOpacity : 0.35;
+  $('image-offset-x').value = b.SourceImageOffsetX || 0; $('image-offset-y').value = b.SourceImageOffsetY || 0;
+  $('image-center-guide').checked = !!b.SourceImageCenterGuide;
+  $('draft-padding').value = b.DraftPadding ?? 2;
   $('cross-lines').checked = !!b.CrossLines;
   $('symmetry-horizontal').checked = !!b.SymmetryHorizontal;
   $('symmetry-vertical').checked = !!b.SymmetryVertical;
@@ -300,7 +320,7 @@ function render() {
   $('canvas-size').textContent = `${b.WidthInches}″ × ${b.HeightInches}″`;
   $('print-size').textContent = `${b.WidthInches}″ × ${b.HeightInches}″`;
   renderPiecesAndPrint();
-  $('line-count').textContent = `${b.Lines.length} ${b.Lines.length === 1 ? 'seam' : 'seams'}`;
+  const count = seamCount(b); $('line-count').textContent = `${count} ${count === 1 ? 'seam' : 'seams'}${curveEnd ? ' · 1 curve preview (not placed)' : ''}`;
   $('editor-instruction').textContent = tool === 'color' ? 'Click a piece to apply fabric color' : tool === 'idle' ? 'Choose a step above to continue' : curveEnd ? 'Preview the bend · Flip arc direction · click to confirm' : tool === 'select' ? 'Select a seam · right-click to delete a line or curve' : $('drawing-shape').value === 'circle' ? 'Hold at the circle center and drag to resize' : pending ? 'Aim toward the next boundary' : 'Choose a start point';
   $('undo').disabled = undo.length === 0;
   $('redo').disabled = redo.length === 0;
@@ -345,7 +365,7 @@ function renderPiecesAndPrint() {
 }
 function gridPoint(raw) {
   if (!raw || !$('snap').checked) return raw;
-  return snapToGrid(block(), raw);
+  return snapToGrid(block(), raw, true);
 }
 function nearestLine(point) {
   let nearest = -1, distance = canvasTolerance();
@@ -356,11 +376,9 @@ function cancelDrawing() { pending = null; cursor = null; curveEnd = null; hover
 function rawCanvasPoint(event) {
   const svg = $('canvas');
   const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.getScreenCTM().inverse());
-  if (!dragging && (point.x < -0.08 || point.y < -0.08 || point.x > block().WidthInches + 0.08 || point.y > block().HeightInches + 0.08)) return null;
-  return {
-    X: Math.max(0, Math.min(block().WidthInches, point.x)),
-    Y: Math.max(0, Math.min(block().HeightInches, point.y)),
-  };
+  const p = block().DraftPadding ?? 2;
+  if (point.x < -p || point.y < -p || point.x > block().WidthInches + p || point.y > block().HeightInches + p) return null;
+  return { X: point.x, Y: point.y };
 }
 function canvasTolerance() {
   const m = $('canvas').getScreenCTM();
@@ -368,10 +386,7 @@ function canvasTolerance() {
 }
 
 function canvasPoint(event) {
-  const svg = $('canvas');
-  const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.getScreenCTM().inverse());
-  if (point.x < -0.08 || point.y < -0.08 || point.x > block().WidthInches + 0.08 || point.y > block().HeightInches + 0.08) return null;
-  const raw = gridPoint({ X: Math.max(0, Math.min(block().WidthInches, point.x)), Y: Math.max(0, Math.min(block().HeightInches, point.y)) });
+  const raw = gridPoint(rawCanvasPoint(event)); if (!raw) return null;
   return snapDrawingPoint(block(), raw, block().DrawingSnapMode || 'intersection', canvasTolerance());
 }
 function distanceToLine(point, line) {
@@ -383,7 +398,7 @@ function distanceToLine(point, line) {
 function completeConstrainedLine(toward) {
   if (!pending || !toward) return false;
   try {
-    const next = addConstrainedLine(block(), pending, toward, {
+    const next = addDraftLine(draftBlock(), pending, toward, {
       tolerance: canvasTolerance(),
       anchorMode: 'line',
       crossLines: $('cross-lines').checked,
@@ -419,18 +434,14 @@ $('canvas').addEventListener('pointerdown', event => {
       $('canvas').setPointerCapture(event.pointerId); renderCanvas(); return;
     }
     if (curveEnd) {
-      try {
-        const kind = $('drawing-shape').value;
-        const bend = kind === 'curve' ? gridPoint(raw) : arcBend(pending, curveEnd, arcSide);
-        const next = addFreeArc(block(), pending, curveEnd, bend, { kind, crossLines: $('cross-lines').checked });
-        const mirrored = applySymmetry(block(), next, $('symmetry-horizontal').checked, $('symmetry-vertical').checked);
-        checkpoint(); project.Blocks[blockIndex] = mirrored; cancelDrawing(); changed();
-      } catch (error) { notify(error.message); }
+      if ($('drawing-shape').value === 'curve') cursor = gridPoint(raw);
+      commitCurve();
     } else {
       const point = gridPoint(raw);
-      const anchor = findAnchor(block(), point, canvasTolerance(), 'line');
+      const anchor = findAnchor(block(), point, screenSize(3), 'line');
       if (pending) curveEnd = anchor?.point || point; else pending = anchor?.point || point;
-      cursor = raw; render();
+      cursor = raw;
+      if (curveEnd && ['half', 'quarter'].includes($('drawing-shape').value)) commitCurve(); else render();
     }
     return;
   }
@@ -452,16 +463,17 @@ $('canvas').addEventListener('pointerdown', event => {
   }
 
   const anchor = findAnchor(block(), gridPoint(raw), canvasTolerance(), 'line');
-  if (!anchor) {
+  const outside = raw.X < 0 || raw.Y < 0 || raw.X > block().WidthInches || raw.Y > block().HeightInches;
+  if (!anchor && !outside) {
     hoverAnchor = null;
     notify('Start the seam on a block edge, existing line, or intersection.');
     renderCanvas();
     return;
   }
 
-  pending = anchor.point;
+  pending = anchor?.point || gridPoint(raw);
   hoverAnchor = anchor;
-  cursor = anchor.point;
+  cursor = pending;
   dragOrigin = { x: event.clientX, y: event.clientY };
   dragging = true;
   try { $('canvas').setPointerCapture(event.pointerId); } catch {}
@@ -482,7 +494,7 @@ $('canvas').addEventListener('pointerup', event => {
   if ($('drawing-shape').value === 'circle') {
     cursor = gridPoint(rawCanvasPoint(event)) || cursor;
     try {
-      const next = addCircle(block(), pending, circleRadius(), { crossLines: $('cross-lines').checked });
+      const next = addCircle(draftBlock(), pending, circleRadius(), { crossLines: true });
       const mirrored = applySymmetry(block(), next, $('symmetry-horizontal').checked, $('symmetry-vertical').checked);
       checkpoint(); project.Blocks[blockIndex] = mirrored; cancelDrawing(); changed();
     } catch (error) { cancelDrawing(); render(); notify(error.message); }
@@ -510,9 +522,10 @@ $('canvas').addEventListener('pointercancel', () => { cancelDrawing(); render();
 $('canvas').addEventListener('contextmenu', event => {
   event.preventDefault(); const raw = rawCanvasPoint(event); if (!raw) return;
   const i = nearestLine(raw); if (i < 0) return;
-  checkpoint(); project.Blocks[blockIndex] = deleteDraft(block(), i); cancelDrawing(); selected = -1; changed();
-  notify('Seam deleted. Undo restores it and any dependent fragments.');
+  checkpoint(); project.Blocks[blockIndex] = removeSelectedGeometry(i); cancelDrawing(); selected = -1; changed();
+  notify('Deleted. Undo restores the previous geometry.');
 });
+function removeSelectedGeometry(i) { return $('delete-mode').value === 'stroke' ? deleteDraft(block(), i) : deleteSegment(block(), i); }
 $('color-tool').onclick = () => chooseTool('color');
 $('piece-select').onchange = () => { selectedPiece = $('piece-select').value; renderPiecesAndPrint(); };
 $('rename-piece').onclick = () => {
@@ -531,20 +544,23 @@ const generateLabels = () => { try { const next = labelSections(block()); checkp
 $('label-sections').onclick = generateLabels;
 $('reset-labels').onclick = generateLabels;
 $('flip-curve').onclick = () => { arcSide *= -1; renderCanvas(); };
+$('place-curve').onclick = () => { if (!curveEnd) curveEnd = cursor; commitCurve(); };
 $('print-section').onchange = () => { previewSection = $('print-section').value; renderPiecesAndPrint(); };
 for (const [id, key] of [['drawing-shape', 'DrawingShape'], ['cross-lines', 'CrossLines'], ['symmetry-horizontal', 'SymmetryHorizontal'], ['symmetry-vertical', 'SymmetryVertical'], ['snap', 'SnapToGrid'], ['show-grid', 'ShowGrid']]) $(id).onchange = () => { checkpoint(); block()[key] = id === 'drawing-shape' ? $(id).value : $(id).checked; cancelDrawing(); changed(); };
 $('draw-tool').onclick = () => chooseTool('draw');
 $('select-tool').onclick = () => chooseTool('select');
 $('undo').onclick = () => { if (!undo.length) return; redo.push(structuredClone(block())); project.Blocks[blockIndex] = undo.pop(); cancelDrawing(); selected = -1; changed(); };
 $('redo').onclick = () => { if (!redo.length) return; undo.push(structuredClone(block())); project.Blocks[blockIndex] = redo.pop(); cancelDrawing(); selected = -1; changed(); };
-$('delete-line').onclick = () => { if (selected < 0) return; checkpoint(); project.Blocks[blockIndex] = deleteDraft(block(), selected); selected = -1; changed(); };
+$('delete-line').onclick = () => { if (selected < 0) return; checkpoint(); project.Blocks[blockIndex] = removeSelectedGeometry(selected); selected = -1; changed(); };
 $('block-name').onchange = () => { checkpoint(); block().Name = $('block-name').value.trim() || 'Untitled block'; changed(); };
 $('dimensions-form').onsubmit = event => {
   event.preventDefault();
   const width = Number($('width').value), height = Number($('height').value);
   if (![width, height].every(value => Number.isFinite(value) && value >= 1 && value <= 240)) { notify('Choose dimensions between 1 and 240 inches.'); return; }
-  const next = resizeBlock(block(), width, height);
-  checkpoint(); project.Blocks[blockIndex] = next; cancelDrawing(); changed(); notify('Block, seam lines, labels, and colors resized.');
+  try {
+    const next = resizeBlock(block(), width, height);
+    checkpoint(); project.Blocks[blockIndex] = next; cancelDrawing(); changed(); notify('Block, seam lines, labels, and colors resized.');
+  } catch (error) { notify(error.message); render(); }
 };
 for (const [id, key] of [['grid-mode', 'GridMode'], ['grid-columns', 'GridColumns'], ['grid-rows', 'GridRows'], ['grid-spacing', 'GridSizeInches']]) $(id).onchange = () => {
   const value = id === 'grid-mode' ? $(id).value : Number($(id).value);
@@ -552,6 +568,18 @@ for (const [id, key] of [['grid-mode', 'GridMode'], ['grid-columns', 'GridColumn
   catch (error) { notify(error.message); render(); }
 };
 $('drawing-snap-mode').onchange = () => { checkpoint(); block().DrawingSnapMode = $('drawing-snap-mode').value; pending = null; changed(); };
+$('draft-padding').onchange = () => { const n = Number($('draft-padding').value); if (!Number.isFinite(n) || n < .5 || n > 24) { notify('Choose 0.5–24 inches of drawing margin.'); render(); return; } checkpoint(); block().DraftPadding = n; changed(); };
+function moveImage(x, y) {
+  if (![x, y].every(n => Number.isFinite(n) && Math.abs(n) <= 240)) { notify('Image offsets must be between -240 and 240 inches.'); render(); return; }
+  checkpoint(); block().SourceImageOffsetX = x; block().SourceImageOffsetY = y; changed();
+}
+for (const id of ['image-offset-x', 'image-offset-y']) $(id).onchange = () => moveImage(Number($('image-offset-x').value), Number($('image-offset-y').value));
+for (const [id, dx, dy] of [['image-left', -1, 0], ['image-right', 1, 0], ['image-up', 0, -1], ['image-down', 0, 1]]) $(id).onclick = () => {
+  const n = Number($('image-nudge').value); if (!Number.isFinite(n) || n < .001 || n > 12) { notify('Choose a nudge from 0.001 to 12 inches.'); return; }
+  moveImage((block().SourceImageOffsetX || 0) + dx * n, (block().SourceImageOffsetY || 0) + dy * n);
+};
+$('image-reset').onclick = () => moveImage(0, 0);
+$('image-center-guide').onchange = () => { checkpoint(); block().SourceImageCenterGuide = $('image-center-guide').checked; changed(); };
 $('clear-drawing').onclick = () => {
   if (!block().Lines.length) { notify('There are no lines to clear.'); return; }
   if (!window.confirm('Clear every line from this block? You can use Undo immediately afterward to restore them.')) return;
@@ -600,6 +628,10 @@ $('quilt-height').onchange = updateQuiltSize;
 $('alternate-mirrors').onchange = () => {
   project.Layout.AlternateMirrors = $('alternate-mirrors').checked;
   changed();
+};
+for (const id of ['quilt-border-width', 'quilt-border-color']) $(id).onchange = () => {
+  const next = { ...project.Layout, BorderInches: Number($('quilt-border-width').value), BorderColor: $('quilt-border-color').value };
+  try { planQuiltLayout(block(), next); project.Layout = next; changed(); } catch (error) { notify(error.message); renderQuiltPreview(); }
 };
 $('quilt-preview').onclick = event => {
   const instance = event.target.closest('[data-instance]'); if (!instance) return;
@@ -679,6 +711,7 @@ $('remove-image').onclick = () => { checkpoint(); delete block().SourceImageBase
 $('export-pdf').onclick = async () => {
   const button = $('export-pdf'); button.disabled = true;
   try {
+    const { createPatternPdf } = await import('./pdf.js');
     const bytes = await createPatternPdf(block(), $('paper').value);
     download(bytes, 'application/pdf', `${filename(block().Name)}-FPP-${$('paper').value}.pdf`);
     notify('PDF downloaded. Print at Actual size / 100% and measure the 1-inch square.');
@@ -692,6 +725,7 @@ $('load-sample').onclick = () => {
 document.addEventListener('keydown', event => {
   if (event.target.closest('input, select, textarea')) return;
   if (event.key === 'Escape') { pending = null; cursor = null; hoverAnchor = null; dragOrigin = null; dragging = false; curveEnd = null; selected = -1; render(); }
+  if (event.key === 'Enter' && curveEnd) { event.preventDefault(); commitCurve(); }
   if (event.key === 'Delete' || event.key === 'Backspace') { if (selected >= 0) { event.preventDefault(); $('delete-line').click(); } }
   if (event.ctrlKey || event.metaKey) {
     if (event.key.toLowerCase() === 'z') { event.preventDefault(); $(event.shiftKey ? 'redo' : 'undo').click(); }

@@ -17,6 +17,8 @@ export function planQuiltLayout(block, layout = {}) {
   validateBlock(block);
   const width = Number(layout.WidthInches);
   const height = Number(layout.HeightInches);
+  const border = Number(layout.BorderInches ?? 0);
+  if (!Number.isFinite(border) || border < 0 || border > 24 || layout.BorderColor && !/^#[0-9a-f]{6}$/i.test(layout.BorderColor)) throw new Error('Choose a border from 0 to 24 inches and a valid color.');
   if (!Number.isFinite(width) || !Number.isFinite(height) || width < block.WidthInches || height < block.HeightInches || width > 240 || height > 240) {
     throw new Error('Quilt dimensions must fit at least one block and be no larger than 240 inches.');
   }
@@ -50,10 +52,11 @@ export function planQuiltLayout(block, layout = {}) {
     }
   }
 
-  return { width, height, columns, rows, usedWidth, usedHeight, offsetX, offsetY, instances };
+  return { width, height, columns, rows, usedWidth, usedHeight, offsetX, offsetY, instances, border, totalWidth: width + border * 2, totalHeight: height + border * 2, borderColor: layout.BorderColor || '#275b4b' };
 }
 
 export function validateBlock(block) {
+  if (block?.AllowOutside != null && typeof block.AllowOutside !== 'boolean') throw new Error('Invalid outside drafting setting.');
   if (!block || !Number.isFinite(block.WidthInches) || !Number.isFinite(block.HeightInches)
     || block.WidthInches < 1 || block.HeightInches < 1
     || block.WidthInches > 240 || block.HeightInches > 240) {
@@ -67,11 +70,13 @@ export function validateBlock(block) {
   for (const line of block.Lines) {
     for (const point of [line.Start, line.End]) {
       if (!point || !Number.isFinite(point.X) || !Number.isFinite(point.Y)
-        || point.X < 0 || point.Y < 0 || point.X > block.WidthInches || point.Y > block.HeightInches) {
+        || point.X < (block.AllowOutside ? -240 : 0) || point.Y < (block.AllowOutside ? -240 : 0) || point.X > block.WidthInches + (block.AllowOutside ? 240 : 0) || point.Y > block.HeightInches + (block.AllowOutside ? 240 : 0)) {
         throw new Error('Every seam endpoint must be inside the finished block.');
       }
     }
   }
+  for (const key of ['SourceImageOffsetX', 'SourceImageOffsetY']) if (block[key] != null && (!Number.isFinite(block[key]) || Math.abs(block[key]) > 240)) throw new Error('Image offsets must be between -240 and 240 inches.');
+  if (block.DraftPadding != null && (!Number.isFinite(block.DraftPadding) || block.DraftPadding < .5 || block.DraftPadding > 24)) throw new Error('Drawing margin must be between 0.5 and 24 inches.');
   if (block.PieceSettings != null) {
     if (typeof block.PieceSettings !== 'object' || Array.isArray(block.PieceSettings) || Object.keys(block.PieceSettings).length > 10000) throw new Error('Invalid piece settings.');
     for (const setting of Object.values(block.PieceSettings)) {
@@ -293,8 +298,15 @@ export function extendLineToNextHit(block, start, toward, crossLines = false) {
   return best ? { X: Math.max(0, Math.min(block.WidthInches, best.X)), Y: Math.max(0, Math.min(block.HeightInches, best.Y)) } : null;
 }
 
-function splitGeometry(block) {
-  const source = [...boundarySegments(block), ...block.Lines.map(line => ({ ...line, BoundaryType: line.BoundaryType || 'piece' }))];
+export function clippedBlockLines(block) {
+  return block.Lines.flatMap(line => {
+    const c = clipLine({ x: line.Start.X, y: line.Start.Y }, { x: line.End.X, y: line.End.Y }, { x: 0, y: 0, width: block.WidthInches, height: block.HeightInches });
+    if (!c || Math.hypot(c.start.x - c.end.x, c.start.y - c.end.y) < EPSILON) return [];
+    return [{ ...line, Start: { X: c.start.x, Y: c.start.y }, End: { X: c.end.x, Y: c.end.y } }];
+  });
+}
+function splitGeometry(block, draftSpace = false) {
+  const source = [...boundarySegments(block), ...(draftSpace ? block.Lines : clippedBlockLines(block)).map(line => ({ ...line, BoundaryType: line.BoundaryType || 'piece' }))];
   const vertices = [];
   const vertexIndex = point => {
     let index = vertices.findIndex(existing => samePoint(existing, point));
@@ -776,7 +788,7 @@ export function applySymmetry(before, after, horizontal = false, vertical = fals
     }
   }
   // Normalize every crossing after atomic mirroring, including original seams.
-  const graph = splitGeometry({ ...after, Lines: lines });
+  const graph = splitGeometry({ ...after, Lines: lines }, true);
   const planar = [];
   for (const edge of graph.edges.filter(e => !e.border)) {
     const a = graph.vertices[edge.a], b = graph.vertices[edge.b];
@@ -833,8 +845,9 @@ export function renameSection(block, from, to) {
 }
 export function resizeBlock(block, width, height) {
   const sx = width / block.WidthInches, sy = height / block.HeightInches;
-  const tx = p => ({ X: Math.min(width, p.X * sx), Y: Math.min(height, p.Y * sy) });
+  const tx = p => ({ X: p.X * sx, Y: p.Y * sy });
   const next = { ...structuredClone(block), WidthInches: width, HeightInches: height, Lines: block.Lines.map(l => ({ ...l, Start: tx(l.Start), End: tx(l.End) })) };
+  next.SourceImageOffsetX = (block.SourceImageOffsetX || 0) * sx; next.SourceImageOffsetY = (block.SourceImageOffsetY || 0) * sy;
   if (block.PieceSettings) {
     next.PieceSettings = {};
     for (const setting of Object.values(block.PieceSettings)) if (setting.Polygon) {
@@ -878,8 +891,9 @@ export function gridSpec(block) {
   if (![columns, rows].every(n => Number.isInteger(n) && n >= 2 && n <= 1000)) throw new Error('Choose 2–1,000 grid divisions per axis.');
   return { stepX: block.WidthInches / columns, stepY: block.HeightInches / rows };
 }
-export function snapToGrid(block, point) {
+export function snapToGrid(block, point, outside = false) {
   const { stepX, stepY } = gridSpec(block);
+  if (outside) return { X: Math.round(point.X / stepX) * stepX, Y: Math.round(point.Y / stepY) * stepY };
   return { X: Math.max(0, Math.min(block.WidthInches, Math.round(point.X / stepX) * stepX)), Y: Math.max(0, Math.min(block.HeightInches, Math.round(point.Y / stepY) * stepY)) };
 }
 export function labelSections(block) {
@@ -914,7 +928,8 @@ function clampPath(block, points) {
   return points.map(p => ({ X: Math.max(0, Math.min(block.WidthInches, p.X)), Y: Math.max(0, Math.min(block.HeightInches, p.Y)) }));
 }
 export function previewFreeArc(block, start, end, bend, kind, crossLines = false) {
-  let points = clampPath(block, sampleCurve(start, end, bend, kind));
+  let points = sampleCurve(start, end, bend, kind);
+  if (!block.AllowOutside) points = clampPath(block, points);
   let startDirection, endDirection;
   if (kind === 'curve') {
     const control = { X: 2 * bend.X - (start.X + end.X) / 2, Y: 2 * bend.Y - (start.Y + end.Y) / 2 };
@@ -930,6 +945,7 @@ export function previewFreeArc(block, start, end, bend, kind, crossLines = false
   }
   // Tangent continuations anchor a free interior arc without altering its bend.
   const extend = (p, neighbor, direction) => {
+    if (p.X < 0 || p.Y < 0 || p.X > block.WidthInches || p.Y > block.HeightInches) return null;
     if (findAnchor(block, p, 1e-5, 'line')) return null;
     if (Math.hypot(direction.X, direction.Y) < 1e-9) direction = { X: p.X - neighbor.X, Y: p.Y - neighbor.Y };
     return extendLineToNextHit(block, p, { X: p.X + direction.X, Y: p.Y + direction.Y });
@@ -947,7 +963,7 @@ export function previewFreeArc(block, start, end, bend, kind, crossLines = false
   return result;
 }
 function addPath(block, points, kind, options = {}) {
-  points = clampPath(block, points);
+  if (!block.AllowOutside) points = clampPath(block, points);
   const draft = crypto.randomUUID(), order = Math.max(-1, ...block.Lines.map((l, i) => l.Order ?? i)) + 1;
   let lines = block.Lines.map((l, i) => ({ ...l, DraftId: l.DraftId || l.Id || `legacy-${i}`, Order: l.Order ?? i }));
   const additions = [];
@@ -956,7 +972,7 @@ function addPath(block, points, kind, options = {}) {
     if (samePoint(a, b)) continue;
     for (const l of [...lines, ...boundarySegments(block)]) if (collinearOverlap(a, b, l.Start, l.End)) throw new Error('The new shape overlaps an existing seam or border.');
     const cuts = [{ ...a, t: 0 }, { ...b, t: 1 }];
-    for (const l of lines) {
+    for (const l of [...lines, ...boundarySegments(block)]) {
       const hit = segmentIntersection(a, b, l.Start, l.End);
       if (hit && !cuts.some(p => samePoint(p, hit))) cuts.push(hit);
     }
@@ -966,14 +982,38 @@ function addPath(block, points, kind, options = {}) {
   }
   const next = validateBlock({ ...block, LabelsReady: false, Lines: [...lines, ...additions] });
   const before = analyzePieces(block), after = analyzePieces(next);
-  if (after.faces.length <= before.faces.length || Math.abs(after.faces.reduce((sum, f) => sum + f.area, 0) - block.WidthInches * block.HeightInches) > 1e-4) throw new Error('The new shape must divide a closed piece.');
+  if (!block.AllowOutside && (after.faces.length <= before.faces.length || Math.abs(after.faces.reduce((sum, f) => sum + f.area, 0) - block.WidthInches * block.HeightInches) > 1e-4)) throw new Error('The new shape must divide a closed piece.');
   return next;
 }
 export function addFreeArc(block, start, end, bend, options = {}) {
   return addPath(block, previewFreeArc(block, start, end, bend, options.kind || 'half', options.crossLines), options.kind || 'half');
 }
 export function addCircle(block, center, radius, options = {}) {
-  const points = clampPath(block, sampleCircle(center, radius));
+  const points = block.AllowOutside ? sampleCircle(center, radius) : clampPath(block, sampleCircle(center, radius));
   if (!options.crossLines && points.some((p, i) => i < points.length - 1 && block.Lines.some(l => segmentIntersection(p, points[i + 1], l.Start, l.End)))) throw new Error('This circle crosses a seam. Enable Continue through lines or use a smaller circle.');
   return addPath(block, points, 'circle');
+}
+
+export const seamCount = block => new Set(block.Lines.map((l, i) => l.DraftId || l.Id || `legacy-${i}`)).size;
+export function addDraftLine(block, start, end, options = {}) {
+  if (!block.AllowOutside || [start, end].every(p => p.X >= 0 && p.Y >= 0 && p.X <= block.WidthInches && p.Y <= block.HeightInches)) return addConstrainedLine(block, start, end, options);
+  return addPath(block, [start, end], null);
+}
+
+// Delete the connected portion of a stroke between intersections, not its
+// individual approximation chords. An unsplit curve remains one segment.
+export function deleteSegment(block, index) {
+  if (!block.Lines[index]) return block;
+  const draftOf = (l, i) => l.DraftId || l.Id || `legacy-${i}`;
+  const draft = draftOf(block.Lines[index], index), remove = new Set([index]), queue = [index];
+  while (queue.length) {
+    const i = queue.pop();
+    for (const p of [block.Lines[i].Start, block.Lines[i].End]) {
+      const neighbors = block.Lines.map((l, j) => ({ l, j })).filter(({ l, j }) => j !== i && (samePoint(p, l.Start) || samePoint(p, l.End)));
+      const atBorder = boundarySegments(block).some(e => projectPointToSegment(p, e).distance < 1e-5);
+      if (atBorder || neighbors.some(({ l, j }) => draftOf(l, j) !== draft)) continue;
+      for (const { l, j } of neighbors) if (draftOf(l, j) === draft && !remove.has(j)) { remove.add(j); queue.push(j); }
+    }
+  }
+  return { ...block, LabelsReady: false, Lines: block.Lines.filter((_, i) => !remove.has(i)) };
 }
