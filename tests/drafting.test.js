@@ -40,6 +40,8 @@ test('free half and quarter arcs retain the curve and extend tails to boundaries
     assert.ok(preview.length > 10);
     assert.ok(preview.some(p => p.Y > 1.2));
     assert.ok(preview[0].X === 0 || preview[0].Y === 0 || preview[0].X === 4 || preview[0].Y === 4);
+    assert.deepEqual(preview[0], kind === 'half' ? { X: 1, Y: 0 } : { X: 0, Y: 0 });
+    assert.deepEqual(preview.at(-1), kind === 'half' ? { X: 3, Y: 0 } : { X: 4, Y: 0 });
     const b = addFreeArc(blank(), start, end, bend, { kind });
     assert.equal(analyzePieces(b).faces.length, 2);
     assert.deepEqual(b.Lines.map(l => l.Start), preview.slice(0, -1));

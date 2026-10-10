@@ -915,12 +915,26 @@ function clampPath(block, points) {
 }
 export function previewFreeArc(block, start, end, bend, kind, crossLines = false) {
   let points = clampPath(block, sampleCurve(start, end, bend, kind));
+  let startDirection, endDirection;
+  if (kind === 'curve') {
+    const control = { X: 2 * bend.X - (start.X + end.X) / 2, Y: 2 * bend.Y - (start.Y + end.Y) / 2 };
+    startDirection = { X: start.X - control.X, Y: start.Y - control.Y };
+    endDirection = { X: end.X - control.X, Y: end.Y - control.Y };
+  } else {
+    const dx = end.X - start.X, dy = end.Y - start.Y, chord = Math.hypot(dx, dy);
+    const side = Math.sign(dx * (bend.Y - start.Y) - dy * (bend.X - start.X)) || 1;
+    const distance = kind === 'half' ? 0 : chord / 2;
+    const center = { X: (start.X + end.X) / 2 + dy / chord * distance * side, Y: (start.Y + end.Y) / 2 - dx / chord * distance * side };
+    startDirection = { X: -side * (start.Y - center.Y), Y: side * (start.X - center.X) };
+    endDirection = { X: side * (end.Y - center.Y), Y: -side * (end.X - center.X) };
+  }
   // Tangent continuations anchor a free interior arc without altering its bend.
-  const extend = (p, neighbor) => {
+  const extend = (p, neighbor, direction) => {
     if (findAnchor(block, p, 1e-5, 'line')) return null;
-    return extendLineToNextHit(block, p, { X: p.X * 2 - neighbor.X, Y: p.Y * 2 - neighbor.Y });
+    if (Math.hypot(direction.X, direction.Y) < 1e-9) direction = { X: p.X - neighbor.X, Y: p.Y - neighbor.Y };
+    return extendLineToNextHit(block, p, { X: p.X + direction.X, Y: p.Y + direction.Y });
   };
-  const first = extend(points[0], points[1]), last = extend(points.at(-1), points.at(-2));
+  const first = extend(points[0], points[1], startDirection), last = extend(points.at(-1), points.at(-2), endDirection);
   if (first) points.unshift(first);
   if (last) points.push(last);
   if (crossLines) return points;
