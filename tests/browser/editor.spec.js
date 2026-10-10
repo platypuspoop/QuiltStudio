@@ -215,7 +215,9 @@ test('free quarter arc starts inside a piece and adds tangent continuations', as
   await clickModel(page, 1, 1); await clickModel(page, 3, 1); await clickModel(page, 2, 2);
   await expect(page.locator('#piece-select option')).toHaveCount(2);
   const lines = await page.evaluate(() => JSON.parse(localStorage.getItem('quiltstudio-project')).Blocks[0].Lines);
-  expect(lines[0].Start.Y).toBe(0); expect(lines.at(-1).End.Y).toBe(0);
+  const onBorder = p => [p.X, p.Y, 4 - p.X, 4 - p.Y].some(n => Math.abs(n) < 1e-6);
+  expect(onBorder(lines[0].Start)).toBe(true); expect(onBorder(lines.at(-1).End)).toBe(true);
+  expect(Math.hypot(lines[0].End.X - 1, lines[0].End.Y - 1)).toBeLessThan(.02);
   await page.locator('#step-4').click(); await page.locator('#label-sections').click();
   await expect(page.locator('#export-pdf')).toBeEnabled();
 });

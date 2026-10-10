@@ -32,6 +32,8 @@ export function installWorkflow(onStep) {
   const footer = document.createElement('div'); footer.className = 'workflow-footer'; footer.innerHTML = '<button id="previous-step" class="button outlined">Previous step</button><button id="next-step" class="button primary">Next step</button>';
   document.querySelector('.howto').replaceWith(footer);
   const print = document.querySelector('.print-panel'); document.querySelector('.workspace').after(print);
+  print.querySelector('.step-dot').textContent = '08';
+  document.querySelector('.quilt-builder-copy .step-dot').textContent = '07';
   const transforms = document.createElement('div'); transforms.className = 'block-transforms';
   transforms.innerHTML = '<p id="selected-block-info">Click a block in the preview to change just that block.</p><button id="flip-block-x" class="button outlined">Mirror left / right</button><button id="flip-block-y" class="button outlined">Flip top / bottom</button><button id="rotate-block" class="button outlined">Rotate 180°</button><button id="quarter-turn-block" class="button outlined">Rotate 90° (square blocks)</button><button id="reset-block-transform" class="button outlined">Reset selected block</button>';
   document.querySelector('.quilt-controls').append(transforms);
