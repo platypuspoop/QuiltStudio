@@ -311,11 +311,12 @@ function render() {
 
 function renderPiecesAndPrint() {
   const analysis = analyzePieces(block());
-  for (const id of ['rename-piece', 'rename-section']) $(id).disabled = block().LabelsReady === false;
+  const ready = block().LabelsReady !== false;
+  for (const id of ['rename-piece', 'rename-section', 'piece-select', 'piece-name']) $(id).disabled = !ready;
   if (!analysis.faces.some(f => f.key === selectedPiece)) selectedPiece = analysis.faces[0]?.key || null;
-  $('piece-select').innerHTML = analysis.faces.map(f => `<option value="${escape(f.key)}">${escape(f.label)}</option>`).join('');
+  $('piece-select').innerHTML = analysis.faces.map((f, i) => `<option value="${escape(f.key)}">${ready ? escape(f.label) : `Unlabeled piece ${i + 1}`}</option>`).join('');
   $('piece-select').value = selectedPiece || '';
-  $('piece-name').value = analysis.faces.find(f => f.key === selectedPiece)?.label || '';
+  $('piece-name').value = ready ? analysis.faces.find(f => f.key === selectedPiece)?.label || '' : '';
   $('print-section').innerHTML = analysis.sections.map(s => `<option value="${s.letter}">Section ${s.letter}</option>`).join('');
   if (!analysis.sections.some(s => s.letter === previewSection)) previewSection = analysis.sections[0]?.letter;
   $('print-section').value = previewSection;
@@ -325,6 +326,7 @@ function renderPiecesAndPrint() {
     const total = plans.reduce((n, p) => n + p.tiles.length, 0), p = plans.find(p => p.letter === previewSection);
     $('sheet-count').textContent = plans.length === 1 ? `${total} ${total === 1 ? 'sheet' : 'sheets'} · ${p.columns} × ${p.rows}` : `${total} sheets · ${plans.length} sections`;
     const svg = $('print-preview');
+    svg.setAttribute('aria-label', `Mirrored foundation preview, section ${p.letter}`);
     svg.setAttribute('viewBox', `-20 -20 ${p.width + 40} ${p.height + 40}`);
     const line = (l, cls) => `<line x1="${l.start.x}" y1="${l.start.y}" x2="${l.end.x}" y2="${l.end.y}" class="${cls}"/>`;
     svg.innerHTML = p.cuts.map(l => line(l, 'section-cut')).join('') + p.lines.map(l => line(l, 'section-seam')).join('') + p.faces.map(f => {

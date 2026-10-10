@@ -7,6 +7,8 @@ export function installWorkflow(onStep) {
     const pane = document.createElement('div'); pane.className = 'workflow-pane'; pane.dataset.step = i;
     const heading = document.createElement('h3'); heading.textContent = name; pane.append(heading); return pane;
   });
+  // Keep moved controls connected so subsequent ID lookups remain valid.
+  settings.append(...panes);
   const move = (step, ids) => ids.forEach(id => {
     const node = $(id); panes[step].append(node.closest('label.field, label.check-field') || node);
   });

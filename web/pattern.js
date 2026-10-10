@@ -34,6 +34,7 @@ export function planQuiltLayout(block, layout = {}) {
     for (let column = 0; column < columns; column++) {
       const key = `${block.Id || 'block'}:${row}:${column}`;
       const custom = layout.BlockTransforms?.[key] || {};
+      if (['mirrorX', 'mirrorY'].some(axis => custom[axis] != null && typeof custom[axis] !== 'boolean')) throw new Error('Block reflections must be on or off.');
       const rotation = custom.rotation ?? 0;
       if (![0, 90, 180, 270].includes(rotation) || rotation % 180 && Math.abs(block.WidthInches - block.HeightInches) > EPSILON) throw new Error('Quarter-turn rotations require a square block.');
       instances.push({
@@ -264,7 +265,7 @@ export function addConstrainedLine(block, rawStart, toward, options = {}) {
     BoundaryType: boundaryType,
   });
 
-  return validateBlock({ ...block, Lines: lines });
+  return validateBlock({ ...block, LabelsReady: block.LabelsReady == null ? undefined : false, Lines: lines });
 }
 
 function raySegmentHit(start, direction, line) {
@@ -753,7 +754,7 @@ export function addCurve(block, start, end, bend, options = {}) {
     for (const p of cuts) lines = splitExistingLinesAtPoint(lines, p);
     for (let j = 0; j < cuts.length - 1; j++) if (!samePoint(cuts[j], cuts[j + 1])) additions.push({ Id: crypto.randomUUID(), DraftId: draft, Order: order, Curve: options.kind || 'curve', BoundaryType: options.boundaryType || 'piece', Start: { X: cuts[j].X, Y: cuts[j].Y }, End: { X: cuts[j + 1].X, Y: cuts[j + 1].Y } });
   }
-  const next = { ...block, Lines: [...lines, ...additions] };
+  const next = { ...block, LabelsReady: block.LabelsReady == null ? undefined : false, Lines: [...lines, ...additions] };
   validateBlock(next);
   if (analyzePieces(next).faces.length <= analyzePieces(block).faces.length) throw new Error('The curve must divide a closed piece.');
   return next;
@@ -867,6 +868,7 @@ export function facePath(face, transform = p => p) {
   return [face.polygon, ...(face.holes || [])].map(ring => ring.map((p, i) => { const q = transform(p); return `${i ? 'L' : 'M'} ${q.X} ${q.Y}`; }).join(' ') + ' Z').join(' ');
 }
 export function gridSpec(block) {
+  if (block.GridMode != null && !['inches', 'subdivisions'].includes(block.GridMode)) throw new Error('Choose rows/columns or inch grid units.');
   if (block.GridMode === 'inches') {
     const step = block.GridSizeInches ?? .25;
     if (!Number.isFinite(step) || step < .001 || step > 240) throw new Error('Grid spacing must be between 0.001 and 240 inches.');

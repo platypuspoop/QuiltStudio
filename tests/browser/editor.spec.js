@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
 import { readFile } from 'node:fs/promises';
+test.beforeEach(async ({ page }) => {
+  page.on('pageerror', error => console.error(`Browser runtime error: ${error.message}`));
+});
 
 test('draw, undo, redo, save, reload, and export an actual-size PDF', async ({ page }) => {
   const errors = [];

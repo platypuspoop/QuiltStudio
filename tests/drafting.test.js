@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addCircle, addFreeArc, arcBend, previewFreeArc, analyzePieces, labelSections, planSectionPatterns, pointInFace, facePath, gridSpec, snapToGrid, planQuiltLayout, transformBlockPoint, deleteDraft, setPieceSetting, parseProject } from '../web/pattern.js';
+import { addCircle, addFreeArc, addConstrainedLine, applySymmetry, arcBend, previewFreeArc, analyzePieces, labelSections, planSectionPatterns, pointInFace, facePath, gridSpec, snapToGrid, planQuiltLayout, transformBlockPoint, deleteDraft, setPieceSetting, parseProject } from '../web/pattern.js';
 const blank = () => ({ Id: 'draft', Name: 'Draft', WidthInches: 4, HeightInches: 4, Lines: [], LabelsReady: false });
 
 test('full circle creates two closed pieces, not overlapping fills, and prints perimeter only', () => {
@@ -71,4 +71,23 @@ test('colors in a circle survive labeling and project round trip', () => {
   const saved = parseProject(JSON.stringify({ SchemaVersion: 1, Blocks: [b] }));
   const face = analyzePieces(saved.Blocks[0]).faces.find(f => pointInFace({ X: 2, Y: 2 }, f));
   assert.equal(face.color, '#ffff00'); assert.ok(face.label);
+});
+
+test('circle symmetry and seam crossings retain closed pieces and full block area', () => {
+  const base = blank();
+  const mirrored = applySymmetry(base, addCircle(base, { X: 1, Y: 1 }, .5), true, true);
+  const crossed = addCircle(addConstrainedLine(base, { X: 0, Y: 2 }, { X: 3, Y: 2 }), { X: 2, Y: 2 }, 1, { crossLines: true });
+  for (const [b, count] of [[mirrored, 5], [crossed, 4]]) {
+    const faces = analyzePieces(b).faces;
+    assert.equal(faces.length, count);
+    assert.ok(Math.abs(faces.reduce((n, f) => n + f.area, 0) - 16) < 1e-6);
+    assert.ok(planSectionPatterns(labelSections(b)).length);
+  }
+});
+
+test('editing labeled geometry invalidates print readiness until labeling is requested again', () => {
+  const b = addConstrainedLine(labelSections(blank()), { X: 0, Y: 2 }, { X: 3, Y: 2 });
+  assert.equal(b.LabelsReady, false);
+  assert.throws(() => planSectionPatterns(b), /Label/);
+  assert.equal(planSectionPatterns(labelSections(b)).length, 1);
 });
