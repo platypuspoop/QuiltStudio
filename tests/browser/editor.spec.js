@@ -357,7 +357,7 @@ test('grid labeling reads left to right and right-click letter changes swap occu
   await page.getByRole('button', { name: '1. Rename the block / section letter', exact: true }).click();
   await page.getByRole('button', { name: 'A–D', exact: true }).click(); await page.getByRole('button', { name: 'D', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0); await expect(page.locator('#piece-name')).toHaveValue('D1');
-  await page.reload(); await page.locator('#step-4').click(); await expect(page.locator('#piece-select option')).toContainText(['D1', 'B1', 'C1', 'A1']);
+  await page.reload(); await page.locator('#step-4').click(); expect((await page.locator('#piece-select option').allTextContents()).sort()).toEqual(['A1', 'B1', 'C1', 'D1']);
 });
 
 test('right-click numbering offers same-letter swaps and adjoining sections only', async ({ page }) => {

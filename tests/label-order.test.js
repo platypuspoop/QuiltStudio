@@ -37,6 +37,12 @@ test('adjoining-piece choices use shared edges and exclude corner-only cells', (
 test('alphabet continues through Z, AA, AZ, BA without omissions', () => {
   assert.deepEqual([0, 10, 11, 25, 26, 36, 37, 51, 52, 77, 78].map(alphaLabel), ['A', 'K', 'L', 'Z', 'AA', 'AK', 'AL', 'AZ', 'BA', 'BZ', 'CA']);
 });
+test('sections beyond Z are listed in alphabetic sequence rather than dictionary order', () => {
+  const b = blank();
+  for (let i = 1; i < 6; i++) b.Lines.push(line(`v${i}`, i * 4 / 6, 0, i * 4 / 6, 4));
+  for (let i = 1; i < 5; i++) b.Lines.push(line(`h${i}`, 0, i * 4 / 5, 4, i * 4 / 5));
+  assert.deepEqual(analyzePieces(labelSections(b)).sections.map(s => s.letter), Array.from({ length: 30 }, (_, i) => alphaLabel(i)));
+});
 test('preview and placement cross every seam when requested, including from outside', () => {
   const base = { ...blank(), Lines: [line('v1', 1, 0, 1, 4), line('v2', 3, 0, 3, 4)] };
   for (const start of [{ X: 0, Y: 2 }, { X: -1, Y: 2 }]) for (const crossLines of [false, true]) {
