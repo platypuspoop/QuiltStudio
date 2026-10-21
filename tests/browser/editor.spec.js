@@ -285,3 +285,45 @@ test('color and quilt preview are adjacent, borders use inch widths and markers 
   const radius = await page.locator('.anchor-cue').evaluate(el => el.getBoundingClientRect().width);
   expect(radius).toBeLessThan(10);
 });
+
+test('nudge buttons form a directional pad and the center cross defaults to thin blue', async ({ page }) => {
+  await page.goto('/'); await importBlock(page, {});
+  const box = async id => page.locator(id).boundingBox();
+  for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const [left, up, right, down] = await Promise.all(['#image-left', '#image-up', '#image-right', '#image-down'].map(box));
+    expect(left.x + left.width).toBeLessThan(up.x); expect(up.x + up.width).toBeLessThan(right.x);
+    expect(up.y + up.height).toBeLessThan(left.y); expect(left.y + left.height).toBeLessThan(down.y);
+    expect(left.y).toBeCloseTo(right.y); expect(up.x).toBeCloseTo(down.x);
+  }
+  await expect(page.locator('#image-center-guide')).toBeChecked();
+  const cross = page.locator('.image-center-cross'); await expect(cross).toBeVisible();
+  await expect(cross).toHaveCSS('stroke', 'rgb(0, 91, 255)'); await expect(cross).toHaveCSS('stroke-width', '0.75px');
+  const center = await cross.evaluate(el => { const b = el.getBBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; });
+  expect(center.x).toBeCloseTo(2); expect(center.y).toBeCloseTo(2);
+  await page.locator('#image-center-guide').uncheck(); await expect(cross).toHaveCount(0);
+  await page.reload(); await expect(page.locator('#image-center-guide')).not.toBeChecked();
+});
+
+test('dense grid lines start on each selected row or column without jumping', async ({ page }) => {
+  await page.goto('/'); await importBlock(page, {}); await page.locator('#step-2').click();
+  for (const y of [.04, .08, .12, 1.96, 2, 2.04, 3.88, 3.92, 3.96]) {
+    await clickModel(page, 0, y); await clickModel(page, 4, y);
+    const last = await page.evaluate(() => JSON.parse(localStorage.getItem('quiltstudio-project')).Blocks[0].Lines.at(-1));
+    expect(last.Start.X).toBeCloseTo(0, 8); expect(last.Start.Y).toBeCloseTo(y, 8);
+    expect(last.End.X).toBeCloseTo(4, 8); expect(last.End.Y).toBeCloseTo(y, 8);
+  }
+  await page.locator('#cross-lines').check();
+  for (const x of [.04, .08, 1.96, 2.04, 3.92, 3.96]) {
+    await clickModel(page, x, 0); await clickModel(page, x, 4);
+    const last = await page.evaluate(() => JSON.parse(localStorage.getItem('quiltstudio-project')).Blocks[0].Lines.at(-1));
+    expect(last.Start.X).toBeCloseTo(x, 8); expect(last.End.X).toBeCloseTo(x, 8); expect(last.End.Y).toBeCloseTo(4, 8);
+  }
+});
+
+test('border controls are last in the right panel below all block transformations', async ({ page }) => {
+  await page.goto('/'); await page.locator('#step-5').click();
+  const transforms = await page.locator('.block-transforms').boundingBox(), borders = await page.locator('.quilt-borders').boundingBox();
+  expect(transforms.y + transforms.height).toBeLessThan(borders.y);
+  expect(await page.locator('.quilt-controls').evaluate(el => el.lastElementChild.classList.contains('quilt-borders'))).toBe(true);
+});
