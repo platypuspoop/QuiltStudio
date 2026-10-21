@@ -46,10 +46,10 @@ export function installWorkflow(onStep) {
   print.querySelector('.step-dot').textContent = '06';
   document.querySelector('.quilt-builder-copy .step-dot').textContent = '05';
   document.querySelector('.workspace').append(document.querySelector('.quilt-builder'));
-  const borders = document.createElement('div'); borders.innerHTML = '<label class="field">Quilt border width · in<input id="quilt-border-width" type="number" min="0" max="24" step="0.25" value="0"/></label><label class="field">Border color<input id="quilt-border-color" type="color" value="#275b4b"/></label><p id="quilt-total-size" class="field-help"></p>'; document.querySelector('.quilt-controls').append(borders);
+  const borders = document.createElement('div'); borders.className = 'quilt-borders'; borders.innerHTML = '<h3>Quilt border</h3><label class="field">Quilt border width · in<input id="quilt-border-width" type="number" min="0" max="24" step="0.25" value="0"/></label><label class="field">Border color<input id="quilt-border-color" type="color" value="#275b4b"/></label><p id="quilt-total-size" class="field-help"></p>';
   const transforms = document.createElement('div'); transforms.className = 'block-transforms';
   transforms.innerHTML = '<p id="selected-block-info">Click a block in the preview to change just that block.</p><button id="flip-block-x" class="button outlined">Mirror left / right</button><button id="flip-block-y" class="button outlined">Flip top / bottom</button><button id="rotate-block" class="button outlined">Rotate 180°</button><button id="quarter-turn-block" class="button outlined">Rotate 90° (square blocks)</button><button id="reset-block-transform" class="button outlined">Reset selected block</button>';
-  document.querySelector('.quilt-controls').append(transforms);
+  document.querySelector('.quilt-controls').append(transforms, borders);
   let active = 0;
   const setStep = i => {
     active = i === 3 ? 2 : i === 6 ? 5 : steps.includes(i) ? i : 0;

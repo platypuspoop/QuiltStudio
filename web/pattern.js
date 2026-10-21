@@ -140,8 +140,10 @@ function projectPointToSegment(point, line) {
   return { ...projected, distance: Math.hypot(point.X - projected.X, point.Y - projected.Y) };
 }
 
-export function snapDrawingPoint(block, point, mode = 'intersection', tolerance = 0.3) {
+export function snapDrawingPoint(block, point, mode = 'intersection', tolerance = 0.3, preferGrid = false) {
   validateBlock(block);
+  // Grid selection is deliberate: nearby geometry must not steal a grid mark.
+  if (preferGrid) return snapToGrid(block, point, true);
   if (mode === 'intersection') {
     let best = null;
     for (const candidate of collectIntersections(block)) {
@@ -162,7 +164,7 @@ export function snapDrawingPoint(block, point, mode = 'intersection', tolerance 
 }
 
 
-export function findAnchor(block, point, tolerance = 0.3, mode = 'line') {
+export function findAnchor(block, point, tolerance = 0.3, mode = 'line', preferClosest = false) {
   validateBlock(block);
   const w = block.WidthInches, h = block.HeightInches;
   const candidates = [];
@@ -194,7 +196,7 @@ export function findAnchor(block, point, tolerance = 0.3, mode = 'line') {
     }
   }
 
-  candidates.sort((a, b) => a.priority - b.priority || a.distance - b.distance);
+  candidates.sort((a, b) => preferClosest && Math.abs(a.distance - b.distance) > 1e-9 ? a.distance - b.distance : a.priority - b.priority || a.distance - b.distance);
   return candidates[0] || null;
 }
 

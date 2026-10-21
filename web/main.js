@@ -252,11 +252,16 @@ function renderCanvas() {
   }
   $('canvas').innerHTML = `<defs><marker id="concavity" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#005bff"/></marker></defs><rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" fill="#fffefb"/>${b.SourceImageBase64 ? `<image href="data:image/${b.SourceImageBase64.startsWith('/9j/') ? 'jpeg' : b.SourceImageBase64.startsWith('UklGR') ? 'webp' : b.SourceImageBase64.startsWith('Qk') ? 'bmp' : 'png'};base64,${escape(b.SourceImageBase64)}" x="${b.SourceImageOffsetX || 0}" y="${b.SourceImageOffsetY || 0}" width="${b.WidthInches}" height="${b.HeightInches}" opacity="${Number.isFinite(b.SourceImageOpacity) ? Math.max(0, Math.min(1, b.SourceImageOpacity)) : 0.35}"/>` : ''}${analyzePieces(b).faces.map(f => `<path d="${facePath(f)}" fill-rule="evenodd" fill="${f.color || (b.SourceImageBase64 ? 'transparent' : '#fffefb')}" class="piece-fill"/>`).join('')}${guides}<rect x="0" y="0" width="${b.WidthInches}" height="${b.HeightInches}" class="block-border"/>${lineMarkup()}${pieceLabelMarkup()}${anchorMarkup}${$('symmetry-vertical').checked ? `<line x1="${b.WidthInches / 2}" y1="0" x2="${b.WidthInches / 2}" y2="${b.HeightInches}" class="symmetry-guide"/>` : ''}${$('symmetry-horizontal').checked ? `<line x1="0" y1="${b.HeightInches / 2}" x2="${b.WidthInches}" y2="${b.HeightInches / 2}" class="symmetry-guide"/>` : ''}${pending ? `<circle cx="${pending.X}" cy="${pending.Y}" r="${screenSize(3)}" class="pending-point"/>${$('drawing-shape').value !== 'line' ? `<polyline points="${arcPoints.map(p => `${p.X},${p.Y}`).join(' ')}" class="pending-line arc-preview" fill="none"/>${arrow}` : previewEnd ? `<line x1="${pending.X}" y1="${pending.Y}" x2="${previewEnd.X}" y2="${previewEnd.Y}" class="pending-line"/>` : ''}` : ''}`;
   $('canvas').classList.toggle('selecting', tool === 'select');
-  if (b.SourceImageCenterGuide) $('canvas').insertAdjacentHTML('beforeend', `<path d="M0 ${b.HeightInches / 2}H${b.WidthInches} M${b.WidthInches / 2} 0V${b.HeightInches}" class="image-center-cross"/>`);
+  if (b.SourceImageCenterGuide !== false) {
+    const x = b.WidthInches / 2, y = b.HeightInches / 2, arm = screenSize(8);
+    $('canvas').insertAdjacentHTML('beforeend', `<path d="M${x - arm} ${y}H${x + arm} M${x} ${y - arm}V${y + arm}" class="image-center-cross"/>`);
+  }
   $('place-curve').disabled = !pending || !cursor || $('drawing-shape').value === 'line' || $('drawing-shape').value === 'circle';
   $('canvas').setAttribute('aria-label', 'Quilt drafting canvas. Arcs can start anywhere. Full circles: hold at center and drag. Straight seams: start on an edge or seam.');
 }
 function renderQuiltPreview() {
+  // Avoid rebuilding hundreds of repeated blocks while editing a hidden layout.
+  if (activeStep !== 5) return;
   const b = block();
   const layout = project.Layout;
   let planned;
@@ -308,7 +313,7 @@ function render() {
   $('snap').checked = b.SnapToGrid !== false; $('show-grid').checked = b.ShowGrid !== false;
   $('opacity').value = Number.isFinite(b.SourceImageOpacity) ? b.SourceImageOpacity : 0.35;
   $('image-offset-x').value = b.SourceImageOffsetX || 0; $('image-offset-y').value = b.SourceImageOffsetY || 0;
-  $('image-center-guide').checked = !!b.SourceImageCenterGuide;
+  $('image-center-guide').checked = b.SourceImageCenterGuide !== false;
   $('draft-padding').value = b.DraftPadding ?? 2;
   $('cross-lines').checked = !!b.CrossLines;
   $('symmetry-horizontal').checked = !!b.SymmetryHorizontal;
@@ -384,10 +389,15 @@ function canvasTolerance() {
   const m = $('canvas').getScreenCTM();
   return 12 / Math.max(1e-9, Math.hypot(m.a, m.b));
 }
+function drawingAnchorTolerance() {
+  if (!$('snap').checked) return canvasTolerance();
+  const { stepX, stepY } = gridSpec(block());
+  return Math.min(canvasTolerance(), Math.min(stepX, stepY) * .45);
+}
 
 function canvasPoint(event) {
   const raw = gridPoint(rawCanvasPoint(event)); if (!raw) return null;
-  return snapDrawingPoint(block(), raw, block().DrawingSnapMode || 'intersection', canvasTolerance());
+  return snapDrawingPoint(block(), raw, block().DrawingSnapMode || 'intersection', canvasTolerance(), $('snap').checked);
 }
 function distanceToLine(point, line) {
   const dx = line.End.X - line.Start.X, dy = line.End.Y - line.Start.Y;
@@ -399,7 +409,7 @@ function completeConstrainedLine(toward) {
   if (!pending || !toward) return false;
   try {
     const next = addDraftLine(draftBlock(), pending, toward, {
-      tolerance: canvasTolerance(),
+      tolerance: 1e-5,
       anchorMode: 'line',
       crossLines: $('cross-lines').checked,
       boundaryType: currentLineRole,
@@ -438,7 +448,7 @@ $('canvas').addEventListener('pointerdown', event => {
       commitCurve();
     } else {
       const point = gridPoint(raw);
-      const anchor = findAnchor(block(), point, screenSize(3), 'line');
+      const anchor = findAnchor(block(), point, Math.min(screenSize(3), drawingAnchorTolerance()), 'line', $('snap').checked);
       if (pending) curveEnd = anchor?.point || point; else pending = anchor?.point || point;
       cursor = raw;
       if (curveEnd && ['half', 'quarter'].includes($('drawing-shape').value)) commitCurve(); else render();
@@ -462,7 +472,7 @@ $('canvas').addEventListener('pointerdown', event => {
     return;
   }
 
-  const anchor = findAnchor(block(), gridPoint(raw), canvasTolerance(), 'line');
+  const anchor = findAnchor(block(), gridPoint(raw), drawingAnchorTolerance(), 'line', $('snap').checked);
   const outside = raw.X < 0 || raw.Y < 0 || raw.X > block().WidthInches || raw.Y > block().HeightInches;
   if (!anchor && !outside) {
     hoverAnchor = null;
@@ -484,7 +494,7 @@ $('canvas').addEventListener('pointermove', event => {
   const raw = rawCanvasPoint(event);
   if (!raw) { hoverAnchor = null; if (!pending) renderCanvas(); return; }
 
-  hoverAnchor = findAnchor(block(), gridPoint(raw), canvasTolerance(), 'line');
+  hoverAnchor = findAnchor(block(), gridPoint(raw), drawingAnchorTolerance(), 'line', $('snap').checked);
   if (pending) cursor = $('drawing-shape').value !== 'line' ? gridPoint(raw) : canvasPoint(event) || raw;
   renderCanvas();
 });
