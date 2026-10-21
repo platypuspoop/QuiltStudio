@@ -33,8 +33,9 @@ export function installWorkflow(onStep) {
   edit.textContent = 'Select or right-click a segment to remove only the portion between intersections. Switch Delete behavior to remove a whole stroke. Undo restores every deletion.'; panes[2].append(edit);
   panes[2].prepend($('draw-tool'));
   const label = document.createElement('button'); label.id = 'label-sections'; label.className = 'button primary full'; label.textContent = 'Label & number sections'; panes[4].append(label);
+  const order = document.createElement('label'); order.className = 'field'; order.innerHTML = 'Automatic label order<select id="label-order"><option value="auto">Auto: center clockwise / grid rows</option><option value="circular">Center outward · clockwise</option><option value="rows">Rows · upper left to right</option></select>'; panes[4].prepend(order);
   move(4, ['piece-select', 'piece-name', 'rename-piece', 'rename-section', 'reset-labels']);
-  const labelHelp = document.createElement('p'); labelHelp.className = 'field-help'; labelHelp.textContent = 'Finish drawing first, then generate section letters and sewing order. You can exchange piece numbers or move pieces to another letter. Seam allowance is calculated only around each final lettered shape.'; panes[4].append(labelHelp);
+  const labelHelp = document.createElement('p'); labelHelp.className = 'field-help'; labelHelp.textContent = 'Generate labels, then right-click a piece to change its letter, number, or adjoining section. Type a letter prefix in the picker for fast navigation. Circular order starts at the center, then sweeps clockwise from 12 o’clock in outward bands. Complete rectangular grids use reading order. Review sewing order before printing.'; panes[4].append(labelHelp);
   move(5, ['fabric-color', 'color-tool']);
   settings.replaceChildren(...panes);
   const nav = document.createElement('nav'); nav.className = 'workflow-nav'; nav.setAttribute('aria-label', 'Design steps');
@@ -44,6 +45,7 @@ export function installWorkflow(onStep) {
   document.querySelector('.howto').replaceWith(footer);
   const print = document.querySelector('.print-panel'); document.querySelector('.workspace').after(print);
   print.querySelector('.step-dot').textContent = '06';
+  print.querySelector('.scope-note:last-child').textContent = 'Each lettered section prints separately with perimeter allowance. Labels follow the chosen spatial order; review sewing order and manual corrections before printing.';
   document.querySelector('.quilt-builder-copy .step-dot').textContent = '05';
   document.querySelector('.workspace').append(document.querySelector('.quilt-builder'));
   const borders = document.createElement('div'); borders.className = 'quilt-borders'; borders.innerHTML = '<h3>Quilt border</h3><label class="field">Quilt border width · in<input id="quilt-border-width" type="number" min="0" max="24" step="0.25" value="0"/></label><label class="field">Border color<input id="quilt-border-color" type="color" value="#275b4b"/></label><p id="quilt-total-size" class="field-help"></p>';

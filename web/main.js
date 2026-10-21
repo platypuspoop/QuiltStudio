@@ -1,5 +1,7 @@
 import './style.css';
 import { installWorkflow } from './workflow.js';
+import { closeLabelMenu, openLabelMenu } from './label-menu.js';
+import { previewDraftLine } from './pattern.js';
 import { addDraftLine, seamCount, deleteSegment, clippedBlockLines } from './pattern.js';
 import { addCircle, addFreeArc, arcBend, previewFreeArc, sampleCircle, sampleCurve, gridSpec, snapToGrid, labelSections, facePath, pointInFace, transformBlockPoint } from './pattern.js';
 import { addConstrainedLine, addCurve, applySymmetry, deleteDraft, pointInPolygon, previewCurve, setPieceSetting, renameSection, resizeBlock, colorLegend, planSectionPatterns, analyzePieces, demoProject, extendLineToNextHit, findAnchor, parseProject, planQuiltLayout, QUILT_PRESETS, snapDrawingPoint } from './pattern.js';
@@ -164,8 +166,9 @@ function persist() {
   }
 }
 function checkpoint() { undo.push(structuredClone(block())); if (undo.length > 100) undo.shift(); redo = []; }
-function changed() { persist(); render(); }
+function changed() { closeLabelMenu(); persist(); render(); }
 function chooseTool(next) {
+  closeLabelMenu();
   tool = next; curveEnd = null; pending = null; cursor = null; hoverAnchor = null; dragOrigin = null; dragging = false; selected = -1;
   for (const name of ['draw', 'select']) {
     $(`${name}-tool`).classList.toggle('active', tool === name);
@@ -235,8 +238,8 @@ function renderCanvas() {
     for (let x = Math.ceil(-padding / sx) * sx; x <= b.WidthInches + padding; x += sx) guides += `<line x1="${x}" y1="${-padding}" x2="${x}" y2="${b.HeightInches + padding}" class="grid-line"/>`;
     for (let y = Math.ceil(-padding / sy) * sy; y <= b.HeightInches + padding; y += sy) guides += `<line x1="${-padding}" y1="${y}" x2="${b.WidthInches + padding}" y2="${y}" class="grid-line"/>`;
   }
-  const outsidePoint = p => p && (p.X < 0 || p.Y < 0 || p.X > b.WidthInches || p.Y > b.HeightInches);
-  const previewEnd = pending && cursor && !outsidePoint(pending) && !outsidePoint(cursor) ? extendLineToNextHit(b, pending, cursor, $('cross-lines').checked) || cursor : cursor;
+  let previewEnd = cursor;
+  if (pending && cursor) { try { previewEnd = previewDraftLine(draftBlock(), pending, cursor, $('cross-lines').checked).at(-1); } catch {} }
   const anchorMarkup = hoverAnchor && tool === 'draw' ? `<circle cx="${hoverAnchor.point.X}" cy="${hoverAnchor.point.Y}" r="${screenSize(4)}" class="anchor-cue ${hoverAnchor.kind}"/><path d="M${hoverAnchor.point.X - screenSize(6)} ${hoverAnchor.point.Y}h${screenSize(12)} M${hoverAnchor.point.X} ${hoverAnchor.point.Y - screenSize(6)}v${screenSize(12)}" class="anchor-crosshair"/>` : '';
   const arcPoints = pending && $('drawing-shape').value !== 'line' ? curvePreviewPoints() : [];
   const end = curveEnd || cursor;
@@ -319,6 +322,7 @@ function render() {
   $('symmetry-horizontal').checked = !!b.SymmetryHorizontal;
   $('symmetry-vertical').checked = !!b.SymmetryVertical;
   $('drawing-shape').value = b.DrawingShape || 'line';
+  $('label-order').value = b.LabelOrderMode || 'auto';
   $('drawing-snap-mode').value = b.DrawingSnapMode || 'intersection';
   $('design-mode').value = project.Layout.DesignMode || 'repeat';
   $('image-controls').hidden = !b.SourceImageBase64;
@@ -531,6 +535,12 @@ $('canvas').addEventListener('pointerleave', () => {
 $('canvas').addEventListener('pointercancel', () => { cancelDrawing(); render(); });
 $('canvas').addEventListener('contextmenu', event => {
   event.preventDefault(); const raw = rawCanvasPoint(event); if (!raw) return;
+  if (activeStep === 4) {
+    if (block().LabelsReady === false) { notify('Use Label & number sections first, then right-click a piece.'); return; }
+    const face = analyzePieces(block()).faces.find(f => pointInFace(raw, f)); if (!face) return;
+    selectedPiece = face.key;
+    openLabelMenu(block(), face.key, event.clientX, event.clientY, next => { checkpoint(); project.Blocks[blockIndex] = next; changed(); }); return;
+  }
   const i = nearestLine(raw); if (i < 0) return;
   checkpoint(); project.Blocks[blockIndex] = removeSelectedGeometry(i); cancelDrawing(); selected = -1; changed();
   notify('Deleted. Undo restores the previous geometry.');
@@ -557,6 +567,8 @@ $('flip-curve').onclick = () => { arcSide *= -1; renderCanvas(); };
 $('place-curve').onclick = () => { if (!curveEnd) curveEnd = cursor; commitCurve(); };
 $('print-section').onchange = () => { previewSection = $('print-section').value; renderPiecesAndPrint(); };
 for (const [id, key] of [['drawing-shape', 'DrawingShape'], ['cross-lines', 'CrossLines'], ['symmetry-horizontal', 'SymmetryHorizontal'], ['symmetry-vertical', 'SymmetryVertical'], ['snap', 'SnapToGrid'], ['show-grid', 'ShowGrid']]) $(id).onchange = () => { checkpoint(); block()[key] = id === 'drawing-shape' ? $(id).value : $(id).checked; cancelDrawing(); changed(); };
+$('cross-lines').onchange = () => { checkpoint(); block().CrossLines = $('cross-lines').checked; changed(); };
+$('label-order').onchange = () => { checkpoint(); block().LabelOrderMode = $('label-order').value; changed(); };
 $('draw-tool').onclick = () => chooseTool('draw');
 $('select-tool').onclick = () => chooseTool('select');
 $('undo').onclick = () => { if (!undo.length) return; redo.push(structuredClone(block())); project.Blocks[blockIndex] = undo.pop(); cancelDrawing(); selected = -1; changed(); };
