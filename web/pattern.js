@@ -56,6 +56,7 @@ export function planQuiltLayout(block, layout = {}) {
 }
 
 export function validateBlock(block) {
+  if (block?.LabelOrderMode != null && !['auto', 'circular', 'rows'].includes(block.LabelOrderMode)) throw new Error('Choose automatic, circular or row label ordering.');
   if (block?.AllowOutside != null && typeof block.AllowOutside !== 'boolean') throw new Error('Invalid outside drafting setting.');
   if (!block || !Number.isFinite(block.WidthInches) || !Number.isFinite(block.HeightInches)
     || block.WidthInches < 1 || block.HeightInches < 1
@@ -335,7 +336,7 @@ function splitGeometry(block, draftSpace = false) {
   return { vertices, edges };
 }
 
-const alphaLabel = index => {
+export const alphaLabel = index => {
   let n = index + 1, label = '';
   while (n > 0) { n--; label = String.fromCharCode(65 + n % 26) + label; n = Math.floor(n / 26); }
   return label;
@@ -491,7 +492,7 @@ export function analyzePieces(block) {
     face.label = `${face.section}${n}`; usedLabels.add(face.label);
   }
   const sections = [];
-  for (const letter of [...new Set(faces.map(f => f.section))].sort()) {
+  for (const letter of [...new Set(faces.map(f => f.section))].sort((a, b) => a.length - b.length || a.localeCompare(b))) {
     const faceIndexes = faces.map((f, i) => f.section === letter ? i : -1).filter(i => i >= 0);
     sections.push({ letter, faceIndexes });
   }
@@ -902,9 +903,59 @@ export function labelSections(block) {
   const next = structuredClone(block);
   for (const setting of Object.values(next.PieceSettings || {})) delete setting.Label;
   const analysis = analyzePieces(next);
+  const mode = block.LabelOrderMode || 'auto';
+  const grid = isRectangularGrid(analysis.faces);
+  let groups = mode !== 'circular' && grid ? analysis.faces.map((_, i) => [i]) : analysis.sections.map(s => s.faceIndexes);
+  const all = analysis.faces.map((_, i) => i);
+  const reading = mode === 'rows' || mode === 'auto' && grid;
+  const orderedFaces = spatialOrder(block, analysis.faces, all, reading);
+  const rank = new Map(orderedFaces.map((index, order) => [index, order]));
+  groups = groups.map(g => [...g].sort((a, b) => rank.get(a) - rank.get(b)));
+  groups.sort((a, b) => rank.get(a[0]) - rank.get(b[0]));
+  groups.forEach((group, i) => group.forEach((faceIndex, j) => { analysis.faces[faceIndex].label = `${alphaLabel(i)}${j + 1}`; }));
   next.PieceSettings = Object.fromEntries(analysis.faces.map(face => [face.key, { Label: face.label, Color: face.color, Polygon: face.polygon, Holes: face.holes }]));
   next.LabelsReady = true;
   return next;
+}
+
+function isRectangularGrid(faces) {
+  if (faces.length < 4) return false;
+  const boxes = faces.map(f => {
+    const p = simplifyPolygon(f.polygon);
+    if (f.holes.length || p.length !== 4 || p.some((a, i) => { const b = p[(i + 1) % 4]; return Math.abs(a.X - b.X) > 1e-6 && Math.abs(a.Y - b.Y) > 1e-6; })) return null;
+    return { x: Math.min(...p.map(p => p.X)), y: Math.min(...p.map(p => p.Y)) };
+  });
+  if (boxes.some(b => !b)) return false;
+  const xs = new Set(boxes.map(b => b.x.toFixed(6))), ys = new Set(boxes.map(b => b.y.toFixed(6)));
+  return xs.size > 1 && ys.size > 1 && xs.size * ys.size === faces.length;
+}
+
+function spatialOrder(block, faces, indexes, reading) {
+  if (reading) return [...indexes].sort((a, b) => {
+    const top = i => Math.min(...faces[i].polygon.map(p => p.Y));
+    const left = i => Math.min(...faces[i].polygon.map(p => p.X));
+    return Math.abs(top(a) - top(b)) > 1e-6 ? top(a) - top(b) : left(a) - left(b);
+  });
+  const center = { X: block.WidthInches / 2, Y: block.HeightInches / 2 };
+  const distance = i => Math.hypot(faces[i].centroid.X - center.X, faces[i].centroid.Y - center.Y);
+  const angle = i => (Math.atan2(faces[i].centroid.X - center.X, center.Y - faces[i].centroid.Y) + Math.PI * 2) % (Math.PI * 2);
+  const containsCenter = i => pointInFace(center, faces[i]) && [faces[i].polygon, ...faces[i].holes].every(r => r.every((p, j) => projectPointToSegment(center, { Start: p, End: r[(j + 1) % r.length] }).distance > 1e-6));
+  const sorted = [...indexes].sort((a, b) => Number(containsCenter(b)) - Number(containsCenter(a)) || distance(a) - distance(b) || angle(a) - angle(b));
+  const first = sorted.shift(), result = first == null ? [] : [first];
+  // Sweep successive radial bands clockwise, starting above the center.
+  const band = Math.min(block.WidthInches, block.HeightInches) * .2;
+  while (sorted.length) {
+    const radius = distance(sorted[0]), ring = sorted.filter(i => distance(i) <= radius + band);
+    ring.sort((a, b) => angle(a) - angle(b) || distance(a) - distance(b));
+    result.push(...ring); ring.forEach(i => sorted.splice(sorted.indexOf(i), 1));
+  }
+  return result;
+}
+
+export function adjacentPieces(analysis, key) {
+  const index = analysis.faces.findIndex(f => f.key === key), neighbors = new Set();
+  for (const e of analysis.edges) if (e.faceIndexes.includes(index)) for (const i of e.faceIndexes) if (i !== index) neighbors.add(i);
+  return [...neighbors].map(i => analysis.faces[i]);
 }
 export function transformBlockPoint(block, instance, point) {
   let x = instance.mirrorX ? block.WidthInches - point.X : point.X;
@@ -998,8 +1049,21 @@ export function addCircle(block, center, radius, options = {}) {
 
 export const seamCount = block => new Set(block.Lines.map((l, i) => l.DraftId || l.Id || `legacy-${i}`)).size;
 export function addDraftLine(block, start, end, options = {}) {
-  if (!block.AllowOutside || [start, end].every(p => p.X >= 0 && p.Y >= 0 && p.X <= block.WidthInches && p.Y <= block.HeightInches)) return addConstrainedLine(block, start, end, options);
-  return addPath(block, [start, end], null);
+  if (!block.AllowOutside) return addConstrainedLine(block, start, end, options);
+  const inside = p => p.X >= 0 && p.Y >= 0 && p.X <= block.WidthInches && p.Y <= block.HeightInches;
+  if (inside(start) && !findAnchor(block, start, options.tolerance ?? 1e-5, 'line')) throw new Error('Start on an edge or seam inside the block.');
+  return addPath(block, previewDraftLine(block, start, end, options.crossLines), null);
+}
+
+export function previewDraftLine(block, start, toward, crossLines = false) {
+  const inside = p => p.X >= 0 && p.Y >= 0 && p.X <= block.WidthInches && p.Y <= block.HeightInches;
+  let end = inside(start) && inside(toward) ? extendLineToNextHit(block, start, toward, crossLines) : toward;
+  if (!end || samePoint(start, end)) throw new Error('Aim toward another line or boundary.');
+  if (!crossLines) {
+    const hits = block.Lines.map(l => segmentIntersection(start, end, l.Start, l.End)).filter(h => h && h.t > 1e-5).sort((a, b) => a.t - b.t);
+    if (hits.length) end = { X: hits[0].X, Y: hits[0].Y };
+  }
+  return [{ ...start }, { ...end }];
 }
 
 // Delete the connected portion of a stroke between intersections, not its

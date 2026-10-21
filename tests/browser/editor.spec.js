@@ -327,3 +327,58 @@ test('border controls are last in the right panel below all block transformation
   expect(transforms.y + transforms.height).toBeLessThan(borders.y);
   expect(await page.locator('.quilt-controls').evaluate(el => el.lastElementChild.classList.contains('quilt-borders'))).toBe(true);
 });
+
+const fourCells = [
+  { Id: 'v', BoundaryType: 'section', Start: { X: 2, Y: 0 }, End: { X: 2, Y: 4 } },
+  { Id: 'h', BoundaryType: 'section', Start: { X: 0, Y: 2 }, End: { X: 4, Y: 2 } },
+];
+
+test('crossing can be enabled after choosing the origin without losing the line', async ({ page }) => {
+  await page.goto('/'); await importBlock(page, { Lines: [
+    { Id: 'v1', Start: { X: 1, Y: 0 }, End: { X: 1, Y: 4 } },
+    { Id: 'v2', Start: { X: 3, Y: 0 }, End: { X: 3, Y: 4 } },
+  ] }); await page.locator('#step-2').click();
+  await clickModel(page, 0, 2); await page.locator('#cross-lines').check();
+  await expect(page.locator('.pending-point')).toHaveCount(1);
+  const end = await modelPosition(page, 4, 2); await page.mouse.move(end.x, end.y);
+  await expect(page.locator('.pending-line')).toHaveAttribute('x2', '4'); await clickModel(page, 4, 2);
+  const crossing = await page.evaluate(() => JSON.parse(localStorage.getItem('quiltstudio-project')).Blocks[0].Lines.filter(l => l.Curve === null));
+  expect(crossing).toHaveLength(3); expect(crossing.at(-1).End.X).toBe(4);
+  await page.locator('#cross-lines').uncheck(); await clickModel(page, 0, 1); await clickModel(page, 4, 1);
+  const last = await page.evaluate(() => JSON.parse(localStorage.getItem('quiltstudio-project')).Blocks[0].Lines.at(-1)); expect(last.End.X).toBe(1);
+});
+
+test('grid labeling reads left to right and right-click letter changes swap occupied names', async ({ page }) => {
+  await page.goto('/'); await importBlock(page, { Lines: fourCells }); await page.locator('#step-4').click(); await page.locator('#label-sections').click();
+  const labels = await page.locator('#canvas .piece-label').evaluateAll(nodes => nodes.map(n => ({ label: n.textContent, x: Number(n.getAttribute('x')), y: Number(n.getAttribute('y')) })));
+  expect(labels.find(l => l.x === 1 && l.y === 1).label).toBe('A1'); expect(labels.find(l => l.x === 3 && l.y === 1).label).toBe('B1');
+  expect(labels.find(l => l.x === 1 && l.y === 3).label).toBe('C1'); expect(labels.find(l => l.x === 3 && l.y === 3).label).toBe('D1');
+  await clickModel(page, 1, 1, { button: 'right' }); await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: '1. Rename the block / section letter', exact: true }).click();
+  await page.getByRole('button', { name: 'A–D', exact: true }).click(); await page.getByRole('button', { name: 'D', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0); await expect(page.locator('#piece-name')).toHaveValue('D1');
+  await page.reload(); await page.locator('#step-4').click(); await expect(page.locator('#piece-select option')).toContainText(['D1', 'B1', 'C1', 'A1']);
+});
+
+test('right-click numbering offers same-letter swaps and adjoining sections only', async ({ page }) => {
+  await page.goto('/'); await importBlock(page, { Lines: [{ Id: 'h', Start: { X: 0, Y: 2 }, End: { X: 4, Y: 2 } }] });
+  await page.locator('#step-4').click(); await page.locator('#label-sections').click(); await clickModel(page, 1, 1, { button: 'right' });
+  await page.getByRole('button', { name: '2. Renumber within section A', exact: true }).click();
+  await page.getByRole('button', { name: 'A2 (swap)', exact: true }).click(); await expect(page.locator('#piece-name')).toHaveValue('A2');
+  await importBlock(page, { Lines: fourCells }); await page.locator('#label-sections').click(); await clickModel(page, 1, 1, { button: 'right' });
+  await page.getByRole('button', { name: '3. Renumber into adjoining blocks', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Join section D', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Join section B', exact: true }).click(); await page.getByRole('button', { name: 'B2', exact: true }).click();
+  await expect(page.locator('#piece-name')).toHaveValue('B2'); await expect(page.locator('#export-pdf')).toBeEnabled();
+});
+
+test('letter picker searches directly past Z and closes when switching steps', async ({ page }) => {
+  const lines = [];
+  for (let i = 1; i < 6; i++) lines.push({ Id: `v${i}`, BoundaryType: 'section', Start: { X: i * 4 / 6, Y: 0 }, End: { X: i * 4 / 6, Y: 4 } });
+  for (let i = 1; i < 5; i++) lines.push({ Id: `h${i}`, BoundaryType: 'section', Start: { X: 0, Y: i * 4 / 5 }, End: { X: 4, Y: i * 4 / 5 } });
+  await page.goto('/'); await importBlock(page, { Lines: lines }); await page.locator('#step-4').click(); await page.locator('#label-sections').click();
+  await clickModel(page, .3, .3, { button: 'right' }); await page.getByRole('button', { name: '1. Rename the block / section letter', exact: true }).click();
+  await page.getByRole('searchbox', { name: 'Find section letter' }).fill('AA'); await page.getByRole('searchbox', { name: 'Find section letter' }).press('Enter');
+  await expect(page.locator('#piece-name')).toHaveValue('AA1');
+  await clickModel(page, .3, .3, { button: 'right' }); await page.locator('#step-2').click(); await expect(page.getByRole('dialog')).toHaveCount(0);
+});
